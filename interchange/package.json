@@ -11,6 +11,7 @@
     "tests/lib"
   ],
   "catalog": {
+    "@corbits/codex-provider": "github:corbitsdev/corbits-codex-provider#a1f475f341261c05fa8dade0c82f1246c175b5b3",
     "@types/semver": "^7.7.1",
     "@types/ssri": "^7.1.5",
     "arktype": "^2.1.29",

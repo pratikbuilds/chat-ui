@@ -115,6 +115,21 @@ Options:
 
 Default ports: hub on 3000 and admin UI on 5173. Provisioned sidecars connect outbound to `ws://localhost:3000/api/sidecars/ws` unless the provisioner is given another Hub WebSocket URL.
 
+### Signing in with Codex
+
+The hub mounts `@corbits/oauth-core`'s browser login for Codex ("Login with ChatGPT") and a refresher that renews the stored token ahead of expiry (`apps/hub/src/corbits.ts`). Codex has no API key, so this is the only way to mint a Codex credential.
+
+1. Create a provider for the credential to be filed under: `POST /api/tenants/:tenantId/providers` with `{"name":"codex","plugin":"openai-responses","apiBaseUrl":"https://chatgpt.com/backend-api"}`.
+2. Start a login: `POST /api/tenants/:tenantId/oauth-logins` with `{"provider":"codex","providerId":"<provider id>","credentialName":"<name>"}`. The response carries a `loginId` and an `authorizeUrl`.
+3. Open `authorizeUrl` and sign in with ChatGPT.
+4. Poll `GET /api/tenants/:tenantId/oauth-logins/:loginId` until `status` is `completed`; it then names the `credentialId`. `DELETE` the same path cancels a pending login.
+
+The login binds the Codex client's fixed redirect, `http://localhost:1455/auth/callback`, inside the hub process. Port 1455 must be free on the hub's machine, and the browser must run on that same machine: against a remote hub the redirect lands on the user's own computer and the login times out after five minutes. Only one login can hold the port at a time.
+
+Serving inference with a Codex credential also needs the Codex adapter in the sidecar; `.env.sidecar.example` carries the `SIDECAR_ADAPTER_MANIFEST` entry for it.
+
+`POST /api/tenants/:tenantId/mcp/discover` with `{"url":"https://...","credentialId":"<optional>"}` reads a remote MCP server's tool catalog server-side (`@corbits/mcp`).
+
 ## Database
 
 Migrations live in `packages/db`. The `bin/db-migrate` script runs `drizzle-kit generate` then `drizzle-kit migrate`. The dev orchestrator (`bin/dev.ts`) runs `drizzle-kit migrate` directly on startup, skipping the generate step.

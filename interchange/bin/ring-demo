@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPODIR=$(git rev-parse --show-toplevel)
+REPODIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 
 if [[ -f "$REPODIR/.env" ]]; then
     set -a

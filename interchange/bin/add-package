@@ -4,7 +4,7 @@
 source "$(dirname -- "${BASH_SOURCE[0]}")/opsh"
 opsh::version::require v0.9.0
 
-REPODIR=$(git rev-parse --show-toplevel)
+REPODIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 
 [[ $# -gt 0 ]] || log::fatal "usage: add-package <name> [name ...]"
 

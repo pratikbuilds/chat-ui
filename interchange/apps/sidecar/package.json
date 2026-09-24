@@ -9,6 +9,7 @@
     "workflow-child": "./bin/workflow-child"
   },
   "dependencies": {
+    "@corbits/codex-provider": "catalog:",
     "@intx/agent": "workspace:*",
     "@intx/authz": "workspace:*",
     "@intx/crypto": "workspace:*",

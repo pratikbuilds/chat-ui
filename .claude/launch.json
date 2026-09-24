@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "interchange-hub",
+      "runtimeExecutable": "bash",
+      "runtimeArgs": ["-c", "cd interchange && bin/dev --seed --no-admin-ui"],
+      "port": 3000
+    }
+  ]
+}
