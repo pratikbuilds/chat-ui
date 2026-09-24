@@ -1,0 +1,720 @@
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  test,
+} from "bun:test";
+
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+
+import git from "isomorphic-git";
+import { eq } from "drizzle-orm";
+
+import { generateKeyPair } from "@intx/crypto";
+import { configureSync, getConfig } from "@intx/log";
+import { collectReachableObjects } from "@intx/storage-isogit/node";
+import type { KeyPair } from "@intx/types/runtime";
+import type { DB } from "@intx/db";
+import {
+  createWorkflowRunDispatchStore,
+  createWorkflowRunStore,
+} from "@intx/db";
+import { principal, sidecarAllocation, workflowRun } from "@intx/db/schema";
+import {
+  createAgentRepoStore,
+  createHubSessionLookups,
+  WORKFLOW_RUN_RUNS_PREFIX,
+} from "@intx/hub-sessions";
+import { deriveWorkflowRunRepoId } from "@intx/workflow-deploy";
+import {
+  createTestDb,
+  harnessDbEnvAvailable,
+  type TestDb,
+} from "@intx/test-harness/db-harness";
+import {
+  seedAsset,
+  seedPrincipal,
+  seedTenants,
+  seedWorkflowRun,
+} from "@intx/test-harness/seed";
+
+const TENANT = "tnt";
+const ASSET = "ast";
+const DEPLOYMENT = "dep";
+const DEPLOYMENT_ADDRESS = "run_dep@tnt.example";
+const DEPLOYMENT_REPO_ID = deriveWorkflowRunRepoId(DEPLOYMENT_ADDRESS);
+// A second deployment on the same tenant, so a run anchored elsewhere can be
+// offered to this deployment's pack-receive seam.
+const FOREIGN_DEPLOYMENT = "dep-foreign";
+const FOREIGN_DEPLOYMENT_ADDRESS = "run_dep_foreign@tnt.example";
+const WFR_REF = "refs/heads/events";
+
+function eventBody(seq: number, type: string): string {
+  return JSON.stringify({ seq, type });
+}
+
+// Route the package logger's error-level records into `sink` until the
+// returned restore is called, so a test can assert the terminal seam surfaces
+// a missing anchor loudly rather than swallowing it.
+function installErrorCapture(sink: string[]): () => void {
+  const savedConfig = getConfig();
+  configureSync({
+    reset: true,
+    sinks: {
+      capture: (record) => {
+        if (record.level !== "error") return;
+        const message = Array.isArray(record.message)
+          ? record.message
+              .map((part) =>
+                typeof part === "string" ? part : JSON.stringify(part),
+              )
+              .join("")
+          : String(record.message);
+        sink.push(message);
+      },
+    },
+    loggers: [{ category: [], lowestLevel: "error", sinks: ["capture"] }],
+  });
+  return () => {
+    // A null capture means this file loaded without `@intx/log` having
+    // installed its default sink, which cannot happen -- importing the
+    // package runs the install. Resetting here instead would leave the
+    // worker with no logging configuration at all, and the install
+    // cannot re-fire to repair it.
+    if (!savedConfig) {
+      throw new Error(
+        "no logging configuration was captured before this suite replaced it",
+      );
+    }
+    configureSync({ reset: true, ...savedConfig });
+  };
+}
+
+describe.skipIf(!harnessDbEnvAvailable())(
+  "workflow-run terminal flip on pack receive (real DB)",
+  () => {
+    let h: TestDb;
+    let signingKey: KeyPair;
+    const tempDirs: string[] = [];
+
+    beforeAll(async () => {
+      h = await createTestDb();
+      signingKey = await generateKeyPair();
+    });
+
+    afterAll(async () => {
+      await h.close();
+    });
+
+    beforeEach(async () => {
+      await h.reset();
+      await seedTenants(h.db, [{ id: TENANT }]);
+      await seedAsset(h.db, {
+        id: ASSET,
+        tenantId: TENANT,
+        kind: "workflow",
+        name: ASSET,
+      });
+      await seedWorkflowRun(h.db, {
+        id: DEPLOYMENT,
+        anchorRunId: DEPLOYMENT,
+        tenantId: TENANT,
+        address: DEPLOYMENT_ADDRESS,
+      });
+      await h.db.insert(sidecarAllocation).values({
+        id: "allocation-terminal-flip",
+        anchorRunId: DEPLOYMENT,
+        tenantId: TENANT,
+        provisionerId: "test",
+        provisionerApiVersion: 1,
+        provisionerBindingFingerprint: "test:v1",
+        status: "allocated",
+        generation: 1,
+        ensureAcceptedGeneration: 1,
+      });
+    });
+
+    afterEach(async () => {
+      for (const d of tempDirs.splice(0)) {
+        await fs.promises
+          .rm(d, { recursive: true, force: true })
+          .catch((_e) => {
+            /* best effort cleanup */
+          });
+      }
+    });
+
+    async function makeTempDir(prefix: string): Promise<string> {
+      const d = await fs.promises.mkdtemp(path.join(os.tmpdir(), prefix));
+      tempDirs.push(d);
+      return d;
+    }
+
+    // Build a workflow-run pack whose tip commit adds each run's event log.
+    // The genesis commit carries a
+    // `.gitignore`-only tree (the kind handler's accepted initial commit); the
+    // tip adds every requested event in one commit.
+    async function buildPack(
+      runs: {
+        runId: string;
+        terminalType?: string;
+        signalId?: string;
+        // When true, omit the seq-0 RunStarted and emit the terminal event
+        // alone at seq 1 -- the exact artifact the crash-loop guard's
+        // supervisor-authored RunFailed produces on an anchor run whose event
+        // log is otherwise empty.
+        terminalOnlyAtSeq1?: boolean;
+      }[],
+    ): Promise<{ pack: Uint8Array; tip: string }> {
+      const srcDir = await makeTempDir("wfr-terminal-src-");
+      await git.init({ fs, dir: srcDir, defaultBranch: "events" });
+
+      const author = { name: "probe", email: "probe@example.com" };
+      await fs.promises.writeFile(path.join(srcDir, ".gitignore"), "");
+      await git.add({ fs, dir: srcDir, filepath: ".gitignore" });
+      const genesis = await git.commit({
+        fs,
+        dir: srcDir,
+        message: "genesis",
+        author,
+        ref: WFR_REF,
+      });
+
+      const files: Record<string, string> = {};
+      for (const {
+        runId,
+        terminalType,
+        signalId,
+        terminalOnlyAtSeq1,
+      } of runs) {
+        if (terminalOnlyAtSeq1 === true) {
+          if (terminalType === undefined) {
+            throw new Error("terminalOnlyAtSeq1 requires a terminalType");
+          }
+          if (signalId !== undefined) {
+            throw new Error(
+              "terminalOnlyAtSeq1 cannot be combined with a signalId",
+            );
+          }
+          files[`${WORKFLOW_RUN_RUNS_PREFIX}/${runId}/events/1.json`] =
+            eventBody(1, terminalType);
+          continue;
+        }
+        files[`${WORKFLOW_RUN_RUNS_PREFIX}/${runId}/events/0.json`] = eventBody(
+          0,
+          "RunStarted",
+        );
+        let seq = 1;
+        if (signalId !== undefined) {
+          files[
+            `${WORKFLOW_RUN_RUNS_PREFIX}/${runId}/events/${String(seq)}.json`
+          ] = JSON.stringify({ seq, type: "SignalReceived", signalId });
+          seq += 1;
+        }
+        if (terminalType !== undefined) {
+          files[
+            `${WORKFLOW_RUN_RUNS_PREFIX}/${runId}/events/${String(seq)}.json`
+          ] = eventBody(seq, terminalType);
+        }
+      }
+      for (const [rel, body] of Object.entries(files)) {
+        const full = path.join(srcDir, rel);
+        await fs.promises.mkdir(path.dirname(full), { recursive: true });
+        await fs.promises.writeFile(full, body);
+        await git.add({ fs, dir: srcDir, filepath: rel });
+      }
+      const tip = await git.commit({
+        fs,
+        dir: srcDir,
+        message: "runs reach terminal",
+        author,
+        parent: [genesis],
+        ref: WFR_REF,
+      });
+
+      const oids = Array.from(
+        new Set(
+          (
+            await Promise.all(
+              [genesis, tip].map((s) => collectReachableObjects(srcDir, s)),
+            )
+          ).flat(),
+        ),
+      );
+      const packResult = await git.packObjects({
+        fs,
+        dir: srcDir,
+        oids,
+        write: false,
+      });
+      if (packResult.packfile === undefined) {
+        throw new Error("git.packObjects returned no packfile");
+      }
+      return { pack: packResult.packfile, tip };
+    }
+
+    // Receive a pack through the real lookups seam wired to `db` (the real
+    // handle unless a test injects a wrapper), returning the pack verdict.
+    async function receiveWith(
+      db: DB["db"],
+      pack: Uint8Array,
+      tip: string,
+    ): Promise<{ accepted: true } | { accepted: false; reason: string }> {
+      const dataDir = await makeTempDir("wfr-terminal-data-");
+      const repoStore = createAgentRepoStore({ dataDir, signingKey });
+      const lookups = createHubSessionLookups({
+        db,
+        agentRepoStore: repoStore,
+      });
+      return lookups.receiveWorkflowRunPack(
+        { kind: "workflow-run", id: DEPLOYMENT_REPO_ID },
+        pack,
+        WFR_REF,
+        tip,
+        {
+          kind: "allocated",
+          agentAddress: DEPLOYMENT_ADDRESS,
+          allocationId: "allocation-terminal-flip",
+          anchorRunId: DEPLOYMENT,
+          generation: 1,
+        },
+      );
+    }
+
+    async function buildAndReceive(
+      runId: string,
+      terminalType: string,
+    ): Promise<void> {
+      const { pack, tip } = await buildPack([{ runId, terminalType }]);
+      const verdict = await receiveWith(h.db, pack, tip);
+      expect(verdict).toEqual({ accepted: true });
+    }
+
+    test("flips the run to its terminal status and deactivates its principal", async () => {
+      await seedPrincipal(h.db, {
+        id: "prn-run",
+        tenantId: TENANT,
+        kind: "workflow",
+        refId: "run-ext",
+        status: "active",
+      });
+      await seedWorkflowRun(h.db, {
+        id: "run-ext",
+        anchorRunId: DEPLOYMENT,
+        tenantId: TENANT,
+        principalId: "prn-run",
+      });
+
+      await buildAndReceive("run-ext", "RunCompleted");
+
+      const [run] = await h.db
+        .select()
+        .from(workflowRun)
+        .where(eq(workflowRun.id, "run-ext"));
+      expect(run?.status).toBe("completed");
+      expect(run?.endedAt).not.toBeNull();
+
+      const [prn] = await h.db
+        .select()
+        .from(principal)
+        .where(eq(principal.id, "prn-run"));
+      expect(prn?.status).toBe("deactivated");
+    });
+
+    test("maps RunFailed and RunCancelled to their statuses", async () => {
+      await seedWorkflowRun(h.db, {
+        id: "run-failed",
+        anchorRunId: DEPLOYMENT,
+        tenantId: TENANT,
+      });
+      await buildAndReceive("run-failed", "RunFailed");
+      const [failed] = await h.db
+        .select()
+        .from(workflowRun)
+        .where(eq(workflowRun.id, "run-failed"));
+      expect(failed?.status).toBe("failed");
+
+      await seedWorkflowRun(h.db, {
+        id: "run-cancelled",
+        anchorRunId: DEPLOYMENT,
+        tenantId: TENANT,
+      });
+      await buildAndReceive("run-cancelled", "RunCancelled");
+      const [cancelled] = await h.db
+        .select()
+        .from(workflowRun)
+        .where(eq(workflowRun.id, "run-cancelled"));
+      expect(cancelled?.status).toBe("cancelled");
+    });
+
+    test("flips a deployed run to failed from a lone seq-1 RunFailed tombstone", async () => {
+      // The crash-loop guard's supervisor-authored RunFailed is the sole event
+      // on the deployment's anchor run: seq 1, no preceding RunStarted, on a run
+      // still in its pre-trigger `deployed` window. This drives that exact
+      // artifact through the full pack-receive path -- not validatePush in
+      // isolation -- and asserts the run's status flips to `failed`.
+      await seedWorkflowRun(h.db, {
+        id: "run-crashloop",
+        anchorRunId: DEPLOYMENT,
+        tenantId: TENANT,
+        status: "deployed",
+      });
+
+      const { pack, tip } = await buildPack([
+        {
+          runId: "run-crashloop",
+          terminalType: "RunFailed",
+          terminalOnlyAtSeq1: true,
+        },
+      ]);
+      const verdict = await receiveWith(h.db, pack, tip);
+      expect(verdict).toEqual({ accepted: true });
+
+      const [row] = await h.db
+        .select()
+        .from(workflowRun)
+        .where(eq(workflowRun.id, "run-crashloop"));
+      expect(row?.status).toBe("failed");
+      expect(row?.endedAt).not.toBeNull();
+    });
+
+    test("deactivates only the run's own principal, not a bystander", async () => {
+      // The run's own principal, plus an unrelated bystander principal on the
+      // same tenant. The flip must deactivate only the run's own principal
+      // (matched by `won.principalId`), leaving the bystander active. (The
+      // bystander cannot share the run's refId: the principal table's
+      // (tenantId, kind, refId) uniqueness forbids two workflow principals with
+      // the same refId, so scoping is proven through the id match.)
+      await seedPrincipal(h.db, {
+        id: "prn-owner",
+        tenantId: TENANT,
+        kind: "workflow",
+        refId: "run-scoped",
+        status: "active",
+      });
+      await seedPrincipal(h.db, {
+        id: "prn-other",
+        tenantId: TENANT,
+        kind: "workflow",
+        refId: "run-unrelated",
+        status: "active",
+      });
+      await seedWorkflowRun(h.db, {
+        id: "run-scoped",
+        anchorRunId: DEPLOYMENT,
+        tenantId: TENANT,
+        principalId: "prn-owner",
+      });
+
+      await buildAndReceive("run-scoped", "RunCompleted");
+
+      const [owner] = await h.db
+        .select()
+        .from(principal)
+        .where(eq(principal.id, "prn-owner"));
+      const [other] = await h.db
+        .select()
+        .from(principal)
+        .where(eq(principal.id, "prn-other"));
+      expect(owner?.status).toBe("deactivated");
+      expect(other?.status).toBe("active");
+    });
+
+    test("an internal run with no principal is flipped and touches no principal", async () => {
+      // A second active principal on the tenant that shares the run's id as its
+      // refId, so a mis-scoped deactivation would visibly hit it. The internal
+      // run carries principalId = null, so nothing must be deactivated.
+      await seedPrincipal(h.db, {
+        id: "prn-bystander",
+        tenantId: TENANT,
+        kind: "workflow",
+        refId: "run-internal",
+        status: "active",
+      });
+      await seedWorkflowRun(h.db, {
+        id: "run-internal",
+        anchorRunId: DEPLOYMENT,
+        tenantId: TENANT,
+        principalId: null,
+      });
+
+      await buildAndReceive("run-internal", "RunCompleted");
+
+      const [run] = await h.db
+        .select()
+        .from(workflowRun)
+        .where(eq(workflowRun.id, "run-internal"));
+      expect(run?.status).toBe("completed");
+      expect(run?.endedAt).not.toBeNull();
+
+      // The run had no principal of its own; the guarded flip won but the
+      // principal branch never ran, so the bystander stays active.
+      const [bystander] = await h.db
+        .select()
+        .from(principal)
+        .where(eq(principal.id, "prn-bystander"));
+      expect(bystander?.status).toBe("active");
+    });
+
+    test("settles a retained signal from its internal run event log", async () => {
+      const dispatchStore = createWorkflowRunDispatchStore(h.db);
+      await dispatchStore.enqueueSignal({
+        id: "dispatch-internal-signal",
+        anchorRunId: DEPLOYMENT,
+        signal: {
+          agentAddress: DEPLOYMENT_ADDRESS,
+          runId: "run-internal-signal",
+          signalName: "approval:resolved",
+          signalId: "signal-internal",
+          payload: { approved: true },
+        },
+      });
+
+      const { pack, tip } = await buildPack([
+        { runId: "run-internal-signal", signalId: "signal-internal" },
+      ]);
+      const verdict = await receiveWith(h.db, pack, tip);
+
+      expect(verdict).toEqual({ accepted: true });
+      expect(
+        (await dispatchStore.findById("dispatch-internal-signal"))?.status,
+      ).toBe("settled");
+    });
+
+    test("a terminal event with no run row mints the row and settles it quietly", async () => {
+      // A loop iteration parked on a plain signal gate never crosses the
+      // correlation register, the only other path that mints an internal run
+      // row, so its terminal event is the first the hub sees of the run. A
+      // missing row is ordinary bookkeeping, not a deployment-boundary
+      // violation: the seam must mint the row against this deployment's anchor
+      // and settle it, with no ERROR.
+      const errors: string[] = [];
+      const restore = installErrorCapture(errors);
+      try {
+        const { pack, tip } = await buildPack([
+          { runId: "run-plain-gate", terminalType: "RunCompleted" },
+        ]);
+        const verdict = await receiveWith(h.db, pack, tip);
+        expect(verdict).toEqual({ accepted: true });
+      } finally {
+        restore();
+      }
+
+      const [minted] = await h.db
+        .select()
+        .from(workflowRun)
+        .where(eq(workflowRun.id, "run-plain-gate"));
+      expect(minted?.anchorRunId).toBe(DEPLOYMENT);
+      expect(minted?.tenantId).toBe(TENANT);
+      // An internal run inherits its deployment's grants and owns no principal.
+      expect(minted?.principalId).toBeNull();
+      expect(minted?.status).toBe("completed");
+      expect(minted?.endedAt).not.toBeNull();
+
+      expect(errors).toEqual([]);
+    });
+
+    test("a terminal event for another deployment's run is ignored loudly", async () => {
+      // The deployment-boundary check. A run row that EXISTS and anchors on a
+      // different deployment must not be settled by this deployment's pack: the
+      // seam logs at ERROR and leaves the row untouched. This is the case the
+      // missing-row mint above must not swallow.
+      await seedWorkflowRun(h.db, {
+        id: FOREIGN_DEPLOYMENT,
+        anchorRunId: FOREIGN_DEPLOYMENT,
+        tenantId: TENANT,
+        address: FOREIGN_DEPLOYMENT_ADDRESS,
+      });
+      await seedWorkflowRun(h.db, {
+        id: "run-foreign",
+        anchorRunId: FOREIGN_DEPLOYMENT,
+        tenantId: TENANT,
+      });
+
+      const errors: string[] = [];
+      const restore = installErrorCapture(errors);
+      try {
+        const { pack, tip } = await buildPack([
+          { runId: "run-foreign", terminalType: "RunCompleted" },
+        ]);
+        const verdict = await receiveWith(h.db, pack, tip);
+        expect(verdict).toEqual({ accepted: true });
+      } finally {
+        restore();
+      }
+
+      // The foreign row kept its status, its end time, and its anchor.
+      const [foreign] = await h.db
+        .select()
+        .from(workflowRun)
+        .where(eq(workflowRun.id, "run-foreign"));
+      expect(foreign?.status).toBe("running");
+      expect(foreign?.endedAt).toBeNull();
+      expect(foreign?.anchorRunId).toBe(FOREIGN_DEPLOYMENT);
+
+      // The boundary violation surfaced loudly, naming the run and the
+      // deployment that tried to settle it.
+      expect(errors).toHaveLength(1);
+      expect(errors[0]).toContain("run-foreign");
+      expect(errors[0]).toContain(DEPLOYMENT);
+    });
+
+    test("markTerminal flips a running run once and is a no-op thereafter", async () => {
+      // Direct store test of the `status = 'running'` guard -- the property the
+      // pack-receive seam relies on for idempotency. This is the test that dies
+      // if the guard is removed: a second flip on an already-completed row must
+      // match nothing and mutate nothing.
+      await seedWorkflowRun(h.db, {
+        id: "run-guard",
+        anchorRunId: DEPLOYMENT,
+        tenantId: TENANT,
+      });
+      const store = createWorkflowRunStore(h.db);
+
+      const endedAt = new Date();
+      const won = await store.markTerminal("run-guard", "completed", endedAt);
+      expect(won).not.toBeNull();
+      expect(won?.status).toBe("completed");
+      expect(won?.endedAt).toEqual(endedAt);
+
+      const [afterFirst] = await h.db
+        .select()
+        .from(workflowRun)
+        .where(eq(workflowRun.id, "run-guard"));
+      const settledEndedAt = afterFirst?.endedAt ?? null;
+      expect(settledEndedAt).not.toBeNull();
+
+      // A second flip -- with a DIFFERENT status and a later timestamp -- must
+      // find no running row, return null, and leave the settled row untouched.
+      const secondEndedAt = new Date(endedAt.getTime() + 60_000);
+      const again = await store.markTerminal(
+        "run-guard",
+        "failed",
+        secondEndedAt,
+      );
+      expect(again).toBeNull();
+
+      const [afterSecond] = await h.db
+        .select()
+        .from(workflowRun)
+        .where(eq(workflowRun.id, "run-guard"));
+      expect(afterSecond?.status).toBe("completed");
+      expect(afterSecond?.endedAt ?? null).toEqual(settledEndedAt);
+    });
+
+    test("markTerminal settles a deployed run torn down before its first trigger", async () => {
+      // A deployment can be torn down while still in its "deployed" (pre-
+      // trigger) window. The live-status guard must accept "deployed" so the
+      // teardown settles the anchor instead of leaving it live forever.
+      await seedWorkflowRun(h.db, {
+        id: "run-deployed",
+        anchorRunId: DEPLOYMENT,
+        tenantId: TENANT,
+        status: "deployed",
+      });
+      const store = createWorkflowRunStore(h.db);
+
+      const endedAt = new Date();
+      const won = await store.markTerminal(
+        "run-deployed",
+        "cancelled",
+        endedAt,
+      );
+      expect(won).not.toBeNull();
+      expect(won?.status).toBe("cancelled");
+      expect(won?.endedAt).toEqual(endedAt);
+    });
+
+    test("a failed flip for one run does not block the batch or the ack", async () => {
+      // The regression that proves the withdrawn crash-window is closed: with
+      // two newly-terminal runs in one pack, if ONE run's DB flip throws,
+      // (a) the pack is still acked (verdict accepted), and (b) the OTHER run is
+      // still flipped and its principal deactivated. A throw that escaped the
+      // per-run loop would drop the ack and abort the batch.
+      //
+      // The kind handler's run-enumeration order is not contractually fixed, so
+      // the injected failure targets whichever run the seam happens to process
+      // first; the assertions below are order-agnostic (exactly one run stuck,
+      // exactly one flipped).
+      for (const runId of ["run-a", "run-b"]) {
+        await seedPrincipal(h.db, {
+          id: `prn-${runId}`,
+          tenantId: TENANT,
+          kind: "workflow",
+          refId: runId,
+          status: "active",
+        });
+        await seedWorkflowRun(h.db, {
+          id: runId,
+          anchorRunId: DEPLOYMENT,
+          tenantId: TENANT,
+          principalId: `prn-${runId}`,
+        });
+      }
+
+      // The first transaction fences pack ingestion under the allocation lock.
+      // Throw from the following transaction, which is the first terminal-row
+      // projection, then let the second run's projection commit normally.
+      let transactionCalls = 0;
+      const failFirstTxDb = new Proxy(h.db, {
+        get(target, prop, receiver) {
+          if (prop === "transaction") {
+            return (
+              ...args: Parameters<DB["db"]["transaction"]>
+            ): ReturnType<DB["db"]["transaction"]> => {
+              transactionCalls += 1;
+              if (transactionCalls === 2) {
+                throw new Error("injected terminal-flip failure");
+              }
+              return target.transaction(...args);
+            };
+          }
+          return Reflect.get(target, prop, receiver);
+        },
+      });
+
+      const { pack, tip } = await buildPack([
+        { runId: "run-a", terminalType: "RunCompleted" },
+        { runId: "run-b", terminalType: "RunCompleted" },
+      ]);
+      const verdict = await receiveWith(failFirstTxDb, pack, tip);
+
+      // The pack was acked despite the mid-loop throw.
+      expect(verdict).toEqual({ accepted: true });
+      // One allocation-fence transaction plus both per-run transactions were
+      // attempted; one failed projection did not short-circuit the loop.
+      expect(transactionCalls).toBe(3);
+
+      const runs = await h.db.select().from(workflowRun);
+      const principals = await h.db.select().from(principal);
+      const statusById = new Map(runs.map((r) => [r.id, r.status]));
+      const principalStatusById = new Map(
+        principals.map((p) => [p.id, p.status]),
+      );
+
+      // Exactly one run was left running (the injected failure) and exactly one
+      // flipped to completed (the sibling the loop still processed).
+      const runStatuses = [
+        statusById.get("run-a"),
+        statusById.get("run-b"),
+      ].sort();
+      expect(runStatuses).toEqual(["completed", "running"]);
+
+      // The stuck run's principal stays active; the flipped run's is
+      // deactivated. They move in lockstep with their run, whichever order the
+      // seam processed them in.
+      for (const runId of ["run-a", "run-b"]) {
+        if (statusById.get(runId) === "completed") {
+          expect(principalStatusById.get(`prn-${runId}`)).toBe("deactivated");
+        } else {
+          expect(principalStatusById.get(`prn-${runId}`)).toBe("active");
+        }
+      }
+    });
+  },
+);

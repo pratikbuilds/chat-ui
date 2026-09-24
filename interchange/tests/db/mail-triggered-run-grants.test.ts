@@ -1,0 +1,333 @@
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  test,
+} from "bun:test";
+
+import { eq } from "drizzle-orm";
+
+import { createGrantStore, createPrincipalKeyStore } from "@intx/db";
+import {
+  grant,
+  principal,
+  workflowDefinition,
+  workflowDefinitionVersion,
+  workflowRun,
+} from "@intx/db/schema";
+import type { GrantWalkSnapshot } from "@intx/types";
+import { createMailTriggeredRunGrantsMaterializer } from "@intx/hub-api";
+import {
+  createTestDb,
+  harnessDbEnvAvailable,
+  type TestDb,
+} from "@intx/test-harness/db-harness";
+import { createTestCredentialCipher } from "@intx/test-harness/crypto";
+import {
+  seedAsset,
+  seedGrant,
+  seedPrincipal,
+  seedTenants,
+} from "@intx/test-harness/seed";
+
+const TENANT = "tnt";
+const ASSET = "ast";
+const DEFINITION = "wfd_real";
+const DEPLOYMENT = "run_real";
+const WORKFLOW_ADDRESS = "run_real@tenant.example";
+const CREATOR = "prn_creator";
+const RUN_ID = "<mail-run-1@tenant.example>";
+const HASH = "a".repeat(64);
+
+// The deploy-approved grant-walk snapshot a source-ref deployment persists at
+// approval: one `tool:read_file` runtime grant plus a creator-sourced
+// requirement. The mail path materializes grants from THIS, never from a
+// workflow.json blob.
+function snapshot(creatorRequirementResource: string): GrantWalkSnapshot {
+  return {
+    perStep: [
+      {
+        stepId: "work",
+        grants: ["tool:read_file"],
+        grantEffects: { "tool:read_file": "allow" },
+      },
+    ],
+    grantRequirements: [
+      {
+        resource: creatorRequirementResource,
+        action: "use",
+        source: "creator",
+      },
+    ],
+  };
+}
+
+describe.skipIf(!harnessDbEnvAvailable())(
+  "createMailTriggeredRunGrantsMaterializer (real DB)",
+  () => {
+    let h: TestDb;
+
+    beforeAll(async () => {
+      h = await createTestDb();
+    });
+
+    afterAll(async () => {
+      await h.close();
+    });
+
+    beforeEach(async () => {
+      await h.reset();
+      await seedTenants(h.db, [{ id: TENANT }]);
+      await seedPrincipal(h.db, {
+        id: CREATOR,
+        tenantId: TENANT,
+        kind: "user",
+        refId: "creator-user",
+      });
+      await seedAsset(h.db, {
+        id: ASSET,
+        tenantId: TENANT,
+        kind: "workflow",
+        name: ASSET,
+        creatorPrincipalId: CREATOR,
+      });
+      // The deployment's first-class definition and its anchor run: the
+      // materializer resolves the run's asset and definition off the anchor,
+      // keyed by the deployment address.
+      await h.db.insert(workflowDefinition).values({
+        id: DEFINITION,
+        tenantId: TENANT,
+        name: DEFINITION,
+        assetId: ASSET,
+      });
+      await h.db.insert(workflowRun).values({
+        id: DEPLOYMENT,
+        tenantId: TENANT,
+        anchorRunId: DEPLOYMENT,
+        definitionId: DEFINITION,
+        address: WORKFLOW_ADDRESS,
+        status: "running",
+      });
+      // The creator holds the grant its creator-sourced requirement demands,
+      // so the happy path resolves it. The rejection test overrides the
+      // requirement to a resource the creator does NOT hold.
+      await seedGrant(h.db, {
+        id: "grt_creator_vault",
+        tenantId: TENANT,
+        principalId: CREATOR,
+        resource: "secret:vault",
+        action: "use",
+        effect: "allow",
+        origin: "creator",
+      });
+    });
+
+    // Freeze a grant-walk snapshot onto the definition's version row, the way a
+    // deploy-time approval does. The mail materializer reads grants from here.
+    async function seedFrozenSnapshot(grantSnapshot: GrantWalkSnapshot | null) {
+      await h.db.insert(workflowDefinitionVersion).values({
+        id: `wdv_${DEFINITION}`,
+        definitionId: DEFINITION,
+        version: "1",
+        status: "active",
+        approvedWireHash: HASH,
+        grantSnapshot,
+      });
+    }
+
+    async function materializeOnce(
+      runId: string,
+    ): ReturnType<ReturnType<typeof createMailTriggeredRunGrantsMaterializer>> {
+      const materialize = createMailTriggeredRunGrantsMaterializer({
+        db: h.db,
+        principalKeyStore: createPrincipalKeyStore({
+          db: h.db,
+          cipher: createTestCredentialCipher(),
+        }),
+        grantStore: createGrantStore(h.db),
+      });
+      return materialize({ agentAddress: WORKFLOW_ADDRESS, runId });
+    }
+
+    test("derives a run's grants from the persisted snapshot and commits once", async () => {
+      // A source-ref deployment persists no workflow.json blob; its run derives
+      // grants purely from the frozen snapshot.
+      await seedFrozenSnapshot(snapshot("secret:vault"));
+      const result = await materializeOnce(RUN_ID);
+      if (result.outcome !== "materialized") {
+        throw new Error(`expected materialized, got ${result.outcome}`);
+      }
+
+      // Exactly one workflow-kind principal keyed on the runId.
+      const principals = await h.db
+        .select()
+        .from(principal)
+        .where(eq(principal.refId, RUN_ID));
+      expect(principals).toHaveLength(1);
+      expect(principals[0]?.kind).toBe("workflow");
+      const runPrincipalId = principals[0]?.id;
+
+      // Exactly one run row whose deployment_id is the SEEDED deployment id
+      // -- the real anchor run's id, NOT the address-derived substrate slug.
+      // The row inserts at all only because that real id was written: the slug
+      // is not a workflow_run.id, so the NOT NULL foreign key would reject it.
+      const runs = await h.db
+        .select()
+        .from(workflowRun)
+        .where(eq(workflowRun.id, RUN_ID));
+      expect(runs).toHaveLength(1);
+      expect(runs[0]?.anchorRunId).toBe(DEPLOYMENT);
+      expect(runs[0]?.principalId).toBe(runPrincipalId);
+      expect(runs[0]?.status).toBe("running");
+      // The committed run anchors on the deployment's definition -- the one the
+      // anchor run carries.
+      expect(runs[0]?.definitionId).toBe(DEFINITION);
+
+      // Every staged grant persisted and FK-resolves to the run principal. The
+      // tool grant comes from the snapshot; the creator requirement resolves
+      // against the creator's seeded grant.
+      const grants = await h.db
+        .select()
+        .from(grant)
+        .where(eq(grant.principalId, runPrincipalId ?? ""));
+      expect(grants.length).toBe(result.stepGrants.length);
+      const resources = grants.map((g) => `${g.resource}/${g.action}`).sort();
+      expect(resources).toContain("tool:read_file/invoke");
+      expect(resources).toContain("secret:vault/use");
+    });
+
+    test("fails closed when the definition has no approved grant snapshot", async () => {
+      // The version row exists but its grant_snapshot column is null -- the
+      // "not yet approved" state. The materializer must raise rather than
+      // launch a run with an empty grant set.
+      await seedFrozenSnapshot(null);
+      await expect(materializeOnce(RUN_ID)).rejects.toThrow(
+        /no approved grant snapshot/,
+      );
+
+      // Nothing was reserved: no run principal, run row, or run grants.
+      const principals = await h.db
+        .select()
+        .from(principal)
+        .where(eq(principal.refId, RUN_ID));
+      expect(principals).toHaveLength(0);
+      const runs = await h.db
+        .select()
+        .from(workflowRun)
+        .where(eq(workflowRun.id, RUN_ID));
+      expect(runs).toHaveLength(0);
+    });
+
+    test("throws when the anchor run's definition has no asset", async () => {
+      // A native workflow definition names its asset; a null asset leaves the
+      // materializer with no creator to resolve creator grants against, so it
+      // throws loudly before deriving any grants.
+      await seedFrozenSnapshot(snapshot("secret:vault"));
+      await h.db.insert(workflowDefinition).values({
+        id: "wfd_null",
+        tenantId: TENANT,
+        name: "no-asset",
+        assetId: null,
+      });
+      await h.db
+        .update(workflowRun)
+        .set({ definitionId: "wfd_null" })
+        .where(eq(workflowRun.id, DEPLOYMENT));
+
+      await expect(materializeOnce(RUN_ID)).rejects.toThrow(
+        /definition has no asset/,
+      );
+    });
+
+    test("a redelivery with the same runId neither throws nor duplicates", async () => {
+      await seedFrozenSnapshot(snapshot("secret:vault"));
+      const first = await materializeOnce(RUN_ID);
+      if (first.outcome !== "materialized") {
+        throw new Error(`expected materialized, got ${first.outcome}`);
+      }
+
+      const firstGrants = await h.db.select().from(grant);
+      const firstGrantCount = firstGrants.length;
+      expect(firstGrantCount).toBeGreaterThan(0);
+
+      // Second delivery of the SAME runId: the deterministic principal id and
+      // the in-transaction guard make the reservation a true no-op. A fresh
+      // random principal id would break the principal foreign key on redelivery
+      // (the conflict-noop principal insert would leave the new id unwritten
+      // while the grant rows referenced it), and re-running the grant inserts
+      // would duplicate rows -- both of which the assertions below rule out.
+      const second = await materializeOnce(RUN_ID);
+      if (second.outcome !== "materialized") {
+        throw new Error(`expected materialized, got ${second.outcome}`);
+      }
+
+      // The two materializations derive the SAME run principal id from the shared
+      // runId, confirming the derivation is deterministic. A random id would
+      // differ here and leave the persisted grant rows referencing an id the
+      // conflict-noop principal insert never wrote.
+      const firstPrincipalIds = new Set(
+        first.stepGrants.map((g) => g.principalId),
+      );
+      const secondPrincipalIds = new Set(
+        second.stepGrants.map((g) => g.principalId),
+      );
+      expect(firstPrincipalIds.size).toBe(1);
+      expect(secondPrincipalIds).toEqual(firstPrincipalIds);
+
+      const principals = await h.db
+        .select()
+        .from(principal)
+        .where(eq(principal.refId, RUN_ID));
+      expect(principals).toHaveLength(1);
+      // The single persisted principal is exactly the id both materializations
+      // derived, so the grant rows' FK resolves against it.
+      expect(firstPrincipalIds.has(principals[0]?.id ?? "")).toBe(true);
+
+      const runs = await h.db
+        .select()
+        .from(workflowRun)
+        .where(eq(workflowRun.id, RUN_ID));
+      expect(runs).toHaveLength(1);
+
+      const grants = await h.db.select().from(grant);
+      expect(grants.length).toBe(firstGrantCount);
+    });
+
+    test("a creator shortfall rejects and writes zero rows", async () => {
+      // The creator-sourced requirement names a resource the creator does not
+      // hold, so staging rejects (403). The rejection is RETURNED (not
+      // thrown), and because authorization fails before reservation, NOTHING
+      // is written -- no orphaned principal, run, or grant rows.
+      await seedFrozenSnapshot(snapshot("secret:locked"));
+      const result = await materializeOnce(RUN_ID);
+      expect(result.outcome).toBe("rejected");
+      if (result.outcome === "rejected") {
+        expect(result.status).toBe(403);
+      }
+
+      // No creator-requirement rejection reaches reservation, so the tables
+      // carry no run principal, run row, or run grants.
+      const principals = await h.db
+        .select()
+        .from(principal)
+        .where(eq(principal.refId, RUN_ID));
+      expect(principals).toHaveLength(0);
+
+      const runs = await h.db
+        .select()
+        .from(workflowRun)
+        .where(eq(workflowRun.id, RUN_ID));
+      expect(runs).toHaveLength(0);
+
+      // The only grant present is the creator's seeded grant; no run grants
+      // were written.
+      const runGrants = await h.db
+        .select()
+        .from(grant)
+        .where(eq(grant.resource, "tool:read_file"));
+      expect(runGrants).toHaveLength(0);
+    });
+  },
+);
