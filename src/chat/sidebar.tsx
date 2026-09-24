@@ -14,6 +14,8 @@ type SidebarProps = {
   onClose: () => void
   onNew: () => void
   onSelect: (id: number) => void
+  account: { name: string; detail: string }
+  onAccount: () => void
 }
 
 export function Sidebar({
@@ -26,6 +28,8 @@ export function Sidebar({
   onClose,
   onNew,
   onSelect,
+  account,
+  onAccount,
 }: SidebarProps) {
   const searchInput = useRef<HTMLInputElement>(null)
   const filtered = chats.filter((item) =>
@@ -127,21 +131,37 @@ export function Sidebar({
             </div>
           ))}
         </nav>
-        <div className="flex h-[66px] items-center gap-2.5 border-t px-5">
-          <span className="flex size-[30px] items-center justify-center rounded-full bg-[#F3E2D2] font-mono text-[11px] font-bold text-[#9A5220]">
-            DR
+        <button
+          className="flex h-[66px] shrink-0 items-center gap-2.5 border-t px-5 text-left hover:bg-white/70"
+          onClick={onAccount}
+          aria-label="Account and models"
+        >
+          <span className="flex size-[30px] shrink-0 items-center justify-center rounded-full bg-[#F3E2D2] font-mono text-[11px] font-bold text-[#9A5220]">
+            {initials(account.name)}
           </span>
-          <span className="flex-1">
-            <span className="block text-sm font-semibold">Dana Reyes</span>
-            <span className="block text-xs text-muted-foreground">
-              Free plan
+          <span className="min-w-0 flex-1">
+            <span className="block truncate text-sm font-semibold">
+              {account.name}
+            </span>
+            <span className="block truncate text-xs text-muted-foreground">
+              {account.detail}
             </span>
           </span>
-          <MoreHorizontal className="size-4 text-muted-foreground" />
-        </div>
+          <MoreHorizontal className="size-4 shrink-0 text-muted-foreground" />
+        </button>
       </aside>
     </>
   )
+}
+
+function initials(name: string) {
+  const letters = name
+    .split(/[\s@._-]+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part[0]?.toUpperCase())
+    .join("")
+  return letters || "?"
 }
 
 function MessageMark() {

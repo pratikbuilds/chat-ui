@@ -11,6 +11,29 @@ import { Composer } from "@/chat/composer"
 import { dinnerReply, initialChats, mockReply, type Stream } from "@/chat/mock"
 import { ChatThread } from "@/chat/thread"
 import { Sidebar } from "@/chat/sidebar"
+import { CodexPanel } from "@/connect/codex-panel"
+import { useHub, type HubState } from "@/connect/use-hub"
+
+function accountSummary(state: HubState) {
+  switch (state.phase) {
+    case "loading":
+      return { name: "Connecting…", detail: "Interchange hub" }
+    case "offline":
+      return { name: "Hub offline", detail: "Start the hub on port 3000" }
+    case "signed-out":
+      return { name: "Sign in", detail: "Connect Codex" }
+    case "ready":
+      return {
+        name: state.user.name || state.user.email,
+        detail:
+          state.codex === undefined
+            ? "Checking Codex…"
+            : state.codex
+              ? "Codex connected"
+              : "Codex not connected",
+      }
+  }
+}
 
 export default function App() {
   const [chats, setChats] = useState(initialChats)
@@ -24,6 +47,9 @@ export default function App() {
   })
   const [mobileOpen, setMobileOpen] = useState(false)
   const [shared, setShared] = useState(false)
+  const hub = useHub()
+  const [accountOpen, setAccountOpen] = useState(false)
+  const closeAccount = useCallback(() => setAccountOpen(false), [])
   const chat = chats.find((item) => item.id === activeId)!
   const workingHere = stream?.chatId === activeId
   const openSidebar = useCallback(() => setMobileOpen(true), [])
@@ -170,6 +196,11 @@ export default function App() {
           setActiveId(id)
           setMobileOpen(false)
         }}
+        account={accountSummary(hub.state)}
+        onAccount={() => {
+          setAccountOpen(true)
+          setMobileOpen(false)
+        }}
       />
       <main className="flex min-w-0 flex-1 flex-col bg-white">
         <header className="flex h-[60px] shrink-0 items-center justify-between gap-2 border-b border-[#F1EFEB] px-4 md:px-7">
@@ -235,6 +266,7 @@ export default function App() {
           onStop={stop}
         />
       </main>
+      {accountOpen && <CodexPanel hub={hub} onClose={closeAccount} />}
     </div>
   )
 }
