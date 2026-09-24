@@ -9,10 +9,12 @@ import {
 } from "@intx/db";
 import { createEnvKeyCredentialCipher } from "@intx/crypto";
 import { hexDecode, type SidecarCapabilityRule } from "@intx/types";
+import { timeWindowEvaluator, type ConditionRegistry } from "@intx/authz";
 import {
   createApp,
   createAuth,
   createMailTriggeredRunGrantsMaterializer,
+  createRequireGrant,
 } from "@intx/hub-api";
 import {
   createAgentRepoStore,
@@ -42,6 +44,7 @@ import { hexEncode } from "@intx/types";
 import { MAX_SIDECAR_FRAME_BYTES } from "@intx/types/sidecar";
 import { upgradeWebSocket, websocket } from "hono/bun";
 import { setup, getLogger } from "@intx/log";
+import { mountCorbits } from "./corbits";
 
 export type CreateHubServerOpts = {
   /** Provisioners eligible to host frozen workflow deployments. */
@@ -465,6 +468,13 @@ export async function createHubServer({
   dispatchScheduler.start();
   connectionRepairScheduler.start();
 
+  // Shared with the Corbits mounts below so every route checks grants the
+  // same way; the condition registry mirrors createApp's own default.
+  const grantStore = createGrantStore(db);
+  const conditionRegistry: ConditionRegistry = {
+    time_window: timeWindowEvaluator,
+  };
+
   const app = createApp({
     getSession: async (headers) => {
       const result = await auth.api.getSession({ headers });
@@ -479,6 +489,7 @@ export async function createHubServer({
     eventCollectors,
     credentialCipher,
     principalKeyStore,
+    grantStore,
     assetService,
     repoStore: agentRepoStore.repoStore,
     maxTarballBytes: hubMaxTarballBytes,
@@ -506,6 +517,14 @@ export async function createHubServer({
         },
       };
     }),
+  });
+
+  mountCorbits({
+    app,
+    db,
+    credentialCipher,
+    requireGrant: createRequireGrant({ grantStore, conditionRegistry }),
+    sidecarRouter,
   });
 
   log.info("Starting server on port {port}", { port });

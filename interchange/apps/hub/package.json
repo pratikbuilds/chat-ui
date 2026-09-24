@@ -11,6 +11,10 @@
     }
   },
   "dependencies": {
+    "@corbits/codex-provider": "github:corbitsdev/corbits-codex-provider#a1f475f341261c05fa8dade0c82f1246c175b5b3",
+    "@corbits/mcp": "github:corbitsdev/corbits-mcp#9df1ab81d2f50d798bca2d2f44eb4759c92fac0e",
+    "@corbits/oauth-core": "github:corbitsdev/corbits-oauth-core#3028f8604155eee63f5a1711f0d4022d7984e3f7",
+    "@intx/authz": "workspace:*",
     "@intx/crypto": "workspace:*",
     "@intx/db": "workspace:*",
     "@intx/hub-api": "workspace:*",
