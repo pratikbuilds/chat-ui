@@ -6,6 +6,7 @@ import type { Chat } from "./mock"
 
 type SidebarProps = {
   chats: Chat[]
+  canCreate: boolean
   activeId: number
   query: string
   mobileOpen: boolean
@@ -20,6 +21,7 @@ type SidebarProps = {
 
 export function Sidebar({
   chats,
+  canCreate,
   activeId,
   query,
   mobileOpen,
@@ -73,6 +75,7 @@ export function Sidebar({
             size="icon-sm"
             aria-label="New chat"
             title="New chat"
+            disabled={!canCreate}
             onClick={onNew}
           >
             <Plus />

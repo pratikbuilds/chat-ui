@@ -138,9 +138,11 @@ function TaskList({ step, booking }: { step: number; booking: boolean }) {
 
 function AssistantMessage({
   message,
+  live,
   onRegenerate,
 }: {
   message: Message
+  live: boolean
   onRegenerate?: () => void
 }) {
   const [expanded, setExpanded] = useState(false)
@@ -166,19 +168,21 @@ function AssistantMessage({
     )
   return (
     <div className="space-y-3.5">
-      <button
-        className="flex items-center gap-1 text-sm text-[#6E6862] hover:text-foreground"
-        onClick={() => setExpanded(!expanded)}
-        aria-expanded={expanded}
-      >
-        Thought <span className="text-[#A39D96]">for 6s</span>
-        {expanded ? (
-          <ChevronUp className="size-3.5" />
-        ) : (
-          <ChevronDown className="size-3.5" />
-        )}
-      </button>
-      {expanded && (
+      {!live && (
+        <button
+          className="flex items-center gap-1 text-sm text-[#6E6862] hover:text-foreground"
+          onClick={() => setExpanded(!expanded)}
+          aria-expanded={expanded}
+        >
+          Thought <span className="text-[#A39D96]">for 6s</span>
+          {expanded ? (
+            <ChevronUp className="size-3.5" />
+          ) : (
+            <ChevronDown className="size-3.5" />
+          )}
+        </button>
+      )}
+      {!live && expanded && (
         <p className="border-l pl-3 text-sm leading-6 text-muted-foreground">
           {message.itinerary
             ? "Mid-October means shorter days, so the sunset plans belong earlier. Keep one slow day open."
@@ -219,16 +223,22 @@ function AssistantMessage({
 export function ChatThread({
   chat,
   stream,
+  live,
+  unavailable,
+  loading,
   onRegenerate,
 }: {
   chat: Chat
   stream: Stream | null
+  live: boolean
+  unavailable: boolean
+  loading: boolean
   onRegenerate: (index: number) => void
 }) {
   const bottom = useRef<HTMLDivElement>(null)
   useEffect(() => {
     bottom.current?.scrollIntoView({ behavior: "smooth", block: "end" })
-  }, [chat.messages.length, stream?.step, chat.id])
+  }, [chat.messages.length, stream?.step, stream?.reply, chat.id])
   return (
     <div className="min-h-0 flex-1 overflow-y-auto px-4 pt-10 pb-6 md:px-12">
       <div className="mx-auto flex min-h-full w-full max-w-[720px] flex-col gap-7">
@@ -238,10 +248,18 @@ export function ChatThread({
         {chat.messages.length === 0 && !(stream?.chatId === chat.id) && (
           <div className="py-24 text-center">
             <h2 className="font-['Instrument_Serif'] text-4xl">
-              What's on your mind?
+              {loading
+                ? "Connecting to Interchange"
+                : unavailable
+                  ? "Chat agent not ready"
+                  : "What's on your mind?"}
             </h2>
             <p className="mt-3 text-sm text-muted-foreground">
-              Ask a question to start this chat.
+              {loading
+                ? "Checking your workspace and chat agent."
+                : unavailable
+                ? "The local Interchange Hub is connected. Waiting for a chat agent."
+                : "Ask a question to start this chat."}
             </p>
           </div>
         )}
@@ -262,6 +280,7 @@ export function ChatThread({
             <AssistantMessage
               key={index}
               message={message}
+              live={live}
               onRegenerate={
                 index === chat.messages.length - 1 && !stream
                   ? () => onRegenerate(index)
@@ -270,7 +289,21 @@ export function ChatThread({
             />
           )
         )}
-        {stream?.chatId === chat.id && stream && (
+        {stream?.chatId === chat.id && stream?.live && (
+          <div className="space-y-3.5" aria-live="polite">
+            {stream.reply ? (
+              <p className="text-[15px] leading-[25px] whitespace-pre-wrap">
+                {stream.reply}
+                <span className="ml-0.5 inline-block h-[17px] w-[8px] animate-pulse bg-[#1F1B18] align-middle" />
+              </p>
+            ) : (
+              <div className="text-sm font-medium text-[#6E6862]">
+                Thinking...
+              </div>
+            )}
+          </div>
+        )}
+        {stream?.chatId === chat.id && stream && !stream.live && (
           <div className="space-y-3.5" aria-live="polite">
             <div>
               <div className="text-sm font-medium text-[#6E6862]">

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react"
 import {
+  findChatDeployment,
   findCodexCredential,
   findCodexProvider,
   getSession,
@@ -24,6 +25,8 @@ export type HubState =
       tenantId: string | null
       /** undefined while the workspace's Codex status is loading. */
       codex: Credential | null | undefined
+      /** The live chat-assistant deployment id, when one is deployed. */
+      chat: string | null
     }
 
 function rememberedWorkspace(workspaces: Workspace[]): string | null {
@@ -50,7 +53,8 @@ async function readHub(): Promise<HubState> {
     const workspaces = await listWorkspaces()
     const tenantId = rememberedWorkspace(workspaces)
     const codex = tenantId ? await loadCodex(tenantId) : null
-    return { phase: "ready", user, workspaces, tenantId, codex }
+    const chat = tenantId ? await findChatDeployment(tenantId) : null
+    return { phase: "ready", user, workspaces, tenantId, codex, chat }
   } catch (error) {
     return {
       phase: "offline",
@@ -98,13 +102,16 @@ export function useHub() {
     }
     setState((current) =>
       current.phase === "ready"
-        ? { ...current, tenantId, codex: undefined }
+        ? { ...current, tenantId, codex: undefined, chat: null }
         : current
     )
-    const codex = await loadCodex(tenantId)
+    const [codex, chat] = await Promise.all([
+      loadCodex(tenantId),
+      findChatDeployment(tenantId),
+    ])
     setState((current) =>
       current.phase === "ready" && current.tenantId === tenantId
-        ? { ...current, codex }
+        ? { ...current, codex, chat }
         : current
     )
   }, [])

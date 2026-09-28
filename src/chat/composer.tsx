@@ -1,4 +1,4 @@
-import { useRef, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import { ArrowUp, Paperclip, Plus, Square, X } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import {
@@ -9,6 +9,7 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { Textarea } from "@/components/ui/textarea"
+import { listCodexModels, type CodexModel } from "@/lib/hub"
 
 const effortOptions = ["Low", "Medium", "High"].map((value) => ({
   label: value,
@@ -21,10 +22,17 @@ const modelOptions = ["Sonnet 5", "GPT-6"].map((value) => ({
 
 export function Composer({
   workingHere,
+  unavailable,
+  codexTenantId,
+  liveModel,
   onSend,
   onStop,
 }: {
   workingHere: boolean
+  unavailable: boolean
+  codexTenantId?: string
+  /** The model the live chat agent runs on; replaces the demo choices. */
+  liveModel?: string
   onSend: (text: string, attachmentName?: string) => void
   onStop: () => void
 }) {
@@ -32,11 +40,65 @@ export function Composer({
   const [attachment, setAttachment] = useState<File | null>(null)
   const [effort, setEffort] = useState("Medium")
   const [model, setModel] = useState("Sonnet 5")
+  const [catalog, setCatalog] = useState<{
+    tenantId: string
+    models: CodexModel[]
+    error: string | null
+  } | null>(null)
   const fileInput = useRef<HTMLInputElement>(null)
+
+  useEffect(() => {
+    if (!codexTenantId) return
+    let active = true
+    void listCodexModels(codexTenantId).then(
+      (models) => {
+        if (active) setCatalog({ tenantId: codexTenantId, models, error: null })
+      },
+      (cause: unknown) => {
+        if (active)
+          setCatalog({
+            tenantId: codexTenantId,
+            models: [],
+            error: cause instanceof Error ? cause.message : String(cause),
+          })
+      }
+    )
+    return () => {
+      active = false
+    }
+  }, [codexTenantId])
+
+  const currentCatalog = catalog?.tenantId === codexTenantId ? catalog : null
+  const models = codexTenantId
+    ? currentCatalog?.models.length
+      ? currentCatalog.models.map((entry) => ({
+          label: entry.name,
+          value: entry.id,
+        }))
+      : [
+          {
+            label: currentCatalog?.error
+              ? "Models unavailable"
+              : "Loading models…",
+            value: "unavailable",
+          },
+        ]
+    : unavailable
+      ? [{ label: "Loading models…", value: "unavailable" }]
+      : modelOptions
+  if (liveModel && !models.some((entry) => entry.value === liveModel)) {
+    models.unshift({ label: liveModel, value: liveModel })
+  }
+  const selectedModel =
+    liveModel
+      ? liveModel
+      : models.some((entry) => entry.value === model)
+        ? model
+        : models[0]?.value
 
   function send() {
     const text = draft.trim()
-    if (!text || workingHere) return
+    if (!text || workingHere || unavailable) return
     onSend(text, attachment?.name)
     setDraft("")
     setAttachment(null)
@@ -54,7 +116,14 @@ export function Composer({
       <div className="mx-auto flex w-full max-w-[720px] flex-col gap-3 rounded-2xl border border-[#E2DED8] bg-white px-3 pt-3.5 pb-3 pl-4 shadow-sm focus-within:border-[#D9772B] focus-within:shadow-[0_0_0_3px_#D9772B24]">
         <Textarea
           aria-label="Message"
-          placeholder={workingHere ? "Ask a follow-up..." : "Ask anything"}
+          placeholder={
+            unavailable
+              ? "Waiting for Interchange agent"
+              : workingHere
+                ? "Ask a follow-up..."
+                : "Ask anything"
+          }
+          disabled={unavailable}
           className="max-h-36 min-h-6 resize-none rounded-none border-0 bg-transparent px-0.5 py-0 text-[15px] leading-6 shadow-none placeholder:text-[#A39D96] focus-visible:border-0 focus-visible:ring-0"
           rows={1}
           value={draft}
@@ -96,6 +165,7 @@ export function Composer({
               className="size-[30px] rounded-full"
               title="Attach file"
               aria-label="Attach file"
+              disabled={unavailable}
               onClick={() => fileInput.current?.click()}
             >
               <Plus />
@@ -135,34 +205,26 @@ export function Composer({
             </Select>
           </div>
           <div className="flex items-center gap-2">
-            <Select
-              items={modelOptions}
-              value={model}
-              onValueChange={(value) => value && setModel(value)}
+            <select
+              aria-label="Model"
+              value={selectedModel}
+              onChange={(event) => setModel(event.target.value)}
+              disabled={
+                (unavailable && !codexTenantId) ||
+                (codexTenantId !== undefined && !currentCatalog?.models.length)
+              }
+              className="h-[30px] max-w-36 cursor-pointer rounded-lg border-0 bg-transparent px-2 text-[13px] text-[#6E6862] outline-none hover:bg-[#F1EFEB] focus-visible:ring-2 focus-visible:ring-[#D9772B]"
             >
-              <SelectTrigger
-                aria-label="Model"
-                className="h-[30px] border-0 bg-transparent px-2 text-[13px] text-[#6E6862] shadow-none hover:bg-[#F1EFEB]"
-              >
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent
-                side="top"
-                align="end"
-                alignItemWithTrigger={false}
-                className="min-w-36 border border-[#ECE9E4] p-1 shadow-[0_8px_24px_#1F1B1814]"
-              >
-                {modelOptions.map((option) => (
-                  <SelectItem
-                    key={option.value}
-                    value={option.value}
-                    className="px-2.5 py-2 text-[13px] focus:bg-[#F1EFEB]"
-                  >
-                    {option.label}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+              {models.map((option) => (
+                <option
+                  key={option.value}
+                  value={option.value}
+                  disabled={liveModel !== undefined && option.value !== liveModel}
+                >
+                  {option.label}
+                </option>
+              ))}
+            </select>
             {workingHere ? (
               <Button
                 type="button"
@@ -179,7 +241,7 @@ export function Composer({
                 type="submit"
                 size="icon-sm"
                 className="size-[30px] rounded-full"
-                disabled={!draft.trim()}
+                disabled={unavailable || !draft.trim()}
                 aria-label="Send message"
                 title="Send message"
               >
@@ -189,7 +251,21 @@ export function Composer({
           </div>
         </div>
       </div>
-      <p className="sr-only">Mock chat. No message is sent to a server.</p>
+      {codexTenantId && unavailable && (
+        <p className="mx-auto mt-2 max-w-[720px] text-xs text-muted-foreground">
+          {liveModel
+            ? "Loading the Interchange conversation…"
+            : "Codex is connected. Deploy the Interchange chat agent to send messages."}
+        </p>
+      )}
+      {currentCatalog?.error && (
+        <p className="mx-auto mt-1 max-w-[720px] text-xs text-[#9B2C22]">
+          {currentCatalog.error}
+        </p>
+      )}
+      {!codexTenantId && !unavailable && (
+        <p className="sr-only">Mock chat. No message is sent to a server.</p>
+      )}
     </form>
   )
 }

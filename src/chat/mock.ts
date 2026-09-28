@@ -17,6 +17,8 @@ export type Stream = {
   step: number
   reply: string
   booking: boolean
+  /** A real reply streaming from the hub's chat agent, not the demo. */
+  live?: true
 }
 
 export const dinnerReply =

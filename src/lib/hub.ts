@@ -210,3 +210,181 @@ export async function listCodexModels(tenantId: string): Promise<CodexModel[]> {
   )
   return models
 }
+
+export const CHAT_ASSET_NAME = "chat-assistant"
+
+type Asset = { id: string; name: string; kind: string }
+type Deployment = {
+  id: string
+  definitionAssetId: string
+  status: string
+  createdAt: string
+}
+
+/**
+ * The live deployment of the chat assistant (scripts/deploy-chat-agent.ts),
+ * newest first, or null when it has not been deployed to this tenant.
+ */
+export async function findChatDeployment(
+  tenantId: string
+): Promise<string | null> {
+  const assets = await request<Asset[]>(
+    "GET",
+    tenantPath(tenantId, "/assets?kind=workflow")
+  )
+  const asset = assets.find((item) => item.name === CHAT_ASSET_NAME)
+  if (!asset) return null
+  const deployments = await request<Deployment[]>(
+    "GET",
+    tenantPath(tenantId, "/workflows/deployments")
+  )
+  const live = deployments
+    .filter(
+      (item) =>
+        item.definitionAssetId === asset.id && item.status === "deployed"
+    )
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+  return live[0]?.id ?? null
+}
+
+/** Live typing for a chat deployment: `delta` {token}, `done`, `ping`. */
+export function openChatEvents(tenantId: string, deploymentId: string) {
+  return new EventSource(tenantPath(tenantId, `/chat/${deploymentId}/events`))
+}
+
+// ---------------------------------------------------------------------------
+// Mailbox (@corbits/mailbox on the hub): the durable record of a chat. A
+// person's messages to the agent are filed in Sent, the agent's replies land
+// in INBOX, and `events` announces each new one.
+
+export type MailboxFolder = "INBOX" | "Sent"
+
+export type MailboxMessage = {
+  uid: number
+  folder: MailboxFolder
+  from: string[]
+  to: string[]
+  date: number
+  text: string
+}
+
+type RawMailboxMessage = {
+  uid: number
+  raw: string
+  envelope: { from?: unknown; to?: unknown; date?: unknown }
+}
+
+/** The tenant's mail domain: agents are addressed `<runId>@<domain>`. */
+export async function getTenantDomain(tenantId: string): Promise<string> {
+  const tenant = await request<{ domain: string }>(
+    "GET",
+    tenantPath(tenantId, "")
+  )
+  return tenant.domain
+}
+
+export async function listMailbox(
+  tenantId: string,
+  folder: MailboxFolder
+): Promise<MailboxMessage[]> {
+  const { messages } = await request<{ messages: RawMailboxMessage[] }>(
+    "GET",
+    tenantPath(tenantId, `/mailbox/me/inbox?folder=${folder}&limit=100`)
+  )
+  return messages.map((message) => ({
+    uid: message.uid,
+    folder,
+    from: addresses(message.envelope.from),
+    to: addresses(message.envelope.to),
+    date: Date.parse(String(message.envelope.date ?? "")) || 0,
+    text: mailText(message.raw),
+  }))
+}
+
+export async function sendMailbox(
+  tenantId: string,
+  to: string,
+  body: string
+): Promise<void> {
+  await request("POST", tenantPath(tenantId, "/mailbox/me/inbox/send"), {
+    to: [to],
+    subject: "Chat",
+    body,
+  })
+}
+
+/** Server-sent `mailbox` events {op, id}; payload-free, so refetch on one. */
+export function openMailboxEvents(tenantId: string) {
+  return new EventSource(tenantPath(tenantId, "/mailbox/me/inbox/events"))
+}
+
+function addresses(value: unknown): string[] {
+  const list = Array.isArray(value) ? value : [value]
+  return list
+    .map((item) =>
+      typeof item === "string"
+        ? item
+        : typeof item === "object" && item !== null
+          ? String(
+              Reflect.get(item, "email") ?? Reflect.get(item, "address") ?? ""
+            )
+          : ""
+    )
+    .map((address) =>
+      address.replace(/^.*</, "").replace(/>.*$/, "").trim().toLowerCase()
+    )
+    .filter(Boolean)
+}
+
+/**
+ * The first text/plain body of a stored message (base64 RFC 5322). Agent
+ * replies are signed multipart mail; a person's sent copy is a flat message.
+ */
+export function mailText(rawBase64: string): string {
+  const bytes = Uint8Array.from(atob(rawBase64), (char) => char.charCodeAt(0))
+  return firstTextPart(new TextDecoder().decode(bytes)).trim()
+}
+
+function firstTextPart(entity: string): string {
+  const split = entity.search(/\r?\n\r?\n/)
+  const head = split < 0 ? entity : entity.slice(0, split)
+  const body = split < 0 ? "" : entity.slice(split).replace(/^\r?\n\r?\n/, "")
+  const contentType = header(head, "content-type") ?? "text/plain"
+  const boundary = /boundary="?([^";\r\n]+)"?/i.exec(contentType)?.[1]
+  if (/^multipart\//i.test(contentType) && boundary) {
+    for (const part of body.split(`--${boundary}`).slice(1)) {
+      if (part.startsWith("--")) break
+      const text = firstTextPart(part.replace(/^\r?\n/, ""))
+      if (text) return text
+    }
+    return ""
+  }
+  if (!/^text\/plain/i.test(contentType)) return ""
+  return decodeBody(body, header(head, "content-transfer-encoding") ?? "")
+}
+
+function header(head: string, name: string): string | undefined {
+  const unfolded = head.replace(/\r?\n[ \t]+/g, " ")
+  const match = new RegExp(`^${name}:\\s*(.*)$`, "im").exec(unfolded)
+  return match?.[1]?.trim()
+}
+
+function decodeBody(body: string, encoding: string): string {
+  if (/base64/i.test(encoding)) {
+    const bytes = Uint8Array.from(atob(body.replace(/\s+/g, "")), (c) =>
+      c.charCodeAt(0)
+    )
+    return new TextDecoder().decode(bytes)
+  }
+  if (/quoted-printable/i.test(encoding)) {
+    const bytes = body
+      .replace(/=\r?\n/g, "")
+      .replace(/=([0-9A-F]{2})/gi, (_, hex: string) =>
+        String.fromCharCode(parseInt(hex, 16))
+      )
+    return new TextDecoder().decode(
+      Uint8Array.from(bytes, (c) => c.charCodeAt(0))
+    )
+  }
+  return body.replace(/\r\n/g, "\n")
+}
