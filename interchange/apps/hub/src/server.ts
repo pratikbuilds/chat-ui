@@ -45,6 +45,7 @@ import { MAX_SIDECAR_FRAME_BYTES } from "@intx/types/sidecar";
 import { upgradeWebSocket, websocket } from "hono/bun";
 import { setup, getLogger } from "@intx/log";
 import { mountCorbits } from "./corbits";
+import { setupMailbox } from "./mailbox";
 
 export type CreateHubServerOpts = {
   /** Provisioners eligible to host frozen workflow deployments. */
@@ -82,7 +83,7 @@ export async function createHubServer({
   // unset and run against postgres' default search_path.
   const pgSchema = process.env["PG_SCHEMA"];
   const dbStatementTimeoutMs = process.env["DB_STATEMENT_TIMEOUT_MS"];
-  const { db } = createDB({
+  const dbConfig = {
     host: process.env["DB_HOST"] ?? "localhost",
     port: Number(process.env["DB_PORT"] ?? 5432),
     user: process.env["DB_USER"] ?? "postgres",
@@ -92,7 +93,8 @@ export async function createHubServer({
     ...(dbStatementTimeoutMs !== undefined && {
       statementTimeoutMs: Number(dbStatementTimeoutMs),
     }),
-  });
+  };
+  const { db } = createDB(dbConfig);
 
   const auth = createAuth(db);
 
@@ -519,13 +521,15 @@ export async function createHubServer({
     }),
   });
 
+  const requireGrant = createRequireGrant({ grantStore, conditionRegistry });
   mountCorbits({
     app,
     db,
     credentialCipher,
-    requireGrant: createRequireGrant({ grantStore, conditionRegistry }),
+    requireGrant,
     sidecarRouter,
   });
+  await setupMailbox({ app, db, dbConfig, lookups, requireGrant });
 
   log.info("Starting server on port {port}", { port });
 

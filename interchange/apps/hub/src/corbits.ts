@@ -14,7 +14,7 @@ import {
   type OAuthTokenRefresher,
 } from "@corbits/oauth-core/hub";
 import type { DB } from "@intx/db";
-import { credential } from "@intx/db/schema";
+import { credential, workflowRun } from "@intx/db/schema";
 import type { AppEnv, RequireGrant, TenantEnv } from "@intx/hub-api";
 import { pushSourceUpdates, type SidecarRouter } from "@intx/hub-sessions";
 import { getLogger } from "@intx/log";
@@ -22,6 +22,7 @@ import { credentialAad, type CredentialCipher } from "@intx/types";
 import { type } from "arktype";
 import { and, desc, eq, isNull, or, sql } from "drizzle-orm";
 import { Hono } from "hono";
+import { streamSSE } from "hono/streaming";
 import { mountCodexDeviceLogin } from "./codex-device-login";
 
 const log = getLogger(["hub", "corbits"]);
@@ -239,5 +240,71 @@ export function mountCorbits({
   });
   app.route(TENANT_PREFIX, mcpApi);
 
+  mountChatEvents({ app, db, requireGrant, sidecarRouter });
+
   return refresher;
+}
+
+const KEEPALIVE_MS = 15_000;
+
+/**
+ * Live token stream for a chat deployment: the deployment's streamed text
+ * (`delta`) and the end of each inference (`done`), as server-sent events.
+ * The finished reply is the agent's mail, which lands in the person's
+ * mailbox (./mailbox.ts); this only shows it being written.
+ */
+function mountChatEvents({
+  app,
+  db,
+  requireGrant,
+  sidecarRouter,
+}: Pick<MountCorbitsDeps, "app" | "db" | "requireGrant" | "sidecarRouter">) {
+  const chatApi = new Hono<TenantEnv>();
+  chatApi.get(
+    "/chat/:deploymentId/events",
+    requireGrant("workflow:*", "read"),
+    async (c) => {
+      const deploymentId = c.req.param("deploymentId");
+      const run = await db.query.workflowRun.findFirst({
+        where: and(
+          eq(workflowRun.id, deploymentId),
+          eq(workflowRun.tenantId, c.get("tenant").id),
+        ),
+        columns: { id: true },
+      });
+      if (run === undefined) {
+        return c.json({ error: "No such deployment in this tenant" }, 404);
+      }
+      const ownAddress = (address: string) =>
+        address.toLowerCase().startsWith(`${deploymentId.toLowerCase()}@`);
+
+      return streamSSE(c, async (stream) => {
+        const send = (event: string, data: unknown) =>
+          void stream.writeSSE({ event, data: JSON.stringify(data) });
+
+        const offAgent = sidecarRouter.events.on(
+          "agent.event",
+          ({ agentAddress, event }) => {
+            if (!ownAddress(agentAddress)) return;
+            const type: unknown = Reflect.get(Object(event), "type");
+            if (type === "inference.text.delta") {
+              const token: unknown = Reflect.get(
+                Object(Reflect.get(Object(event), "data")),
+                "token",
+              );
+              if (typeof token === "string") send("delta", { token });
+            } else if (type === "inference.done") {
+              send("done", {});
+            }
+          },
+        );
+        await stream.writeSSE({ event: "ready", data: "{}" });
+        const keepalive = setInterval(() => send("ping", {}), KEEPALIVE_MS);
+        await new Promise<void>((resolve) => stream.onAbort(resolve));
+        clearInterval(keepalive);
+        offAgent();
+      });
+    },
+  );
+  app.route(TENANT_PREFIX, chatApi);
 }

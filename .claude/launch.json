@@ -6,6 +6,15 @@
       "runtimeExecutable": "bash",
       "runtimeArgs": [
         "-c",
+        "cd interchange && bun --conditions=intx-src --env-file=.env --env-file=.env.hub tests/admin-ui-e2e/harness/hub.ts"
+      ],
+      "port": 3000
+    },
+    {
+      "name": "interchange-hub-seed",
+      "runtimeExecutable": "bash",
+      "runtimeArgs": [
+        "-c",
         "cd interchange && bin/dev --seed --no-admin-ui"
       ],
       "port": 3000
