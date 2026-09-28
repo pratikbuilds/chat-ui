@@ -44,7 +44,13 @@ export const modelProvider = pgTable(
       .references(() => tenant.id, { onDelete: "cascade" }),
     name: text("name").notNull(),
     plugin: text("plugin", {
-      enum: ["anthropic", "openai", "openai-compatible", "google-genai"],
+      enum: [
+        "anthropic",
+        "openai",
+        "openai-compatible",
+        "google-genai",
+        "codex",
+      ],
     }).notNull(),
     baseURL: text("base_url").notNull(),
     // A provider authenticates via exactly one of credential or wallet (the

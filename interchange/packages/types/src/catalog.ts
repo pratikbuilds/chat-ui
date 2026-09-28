@@ -7,6 +7,9 @@ export const modelProviderPlugins = [
   "openai",
   "openai-compatible",
   "google-genai",
+  // OpenAI Codex over a "Continue with Codex" OAuth credential, served by
+  // @corbits/codex-provider's adapter from SIDECAR_ADAPTER_MANIFEST.
+  "codex",
 ] as const;
 export type ModelProviderPlugin = (typeof modelProviderPlugins)[number];
 export const ModelProviderPlugin = type
