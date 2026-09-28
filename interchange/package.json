@@ -11,7 +11,9 @@
     "tests/lib"
   ],
   "catalog": {
-    "@corbits/codex-provider": "github:corbitsdev/corbits-codex-provider#a1f475f341261c05fa8dade0c82f1246c175b5b3",
+    "@corbits/codex-provider": "0.1.1",
+    "@corbits/oauth-core": "0.2.0",
+    "@corbits/openai-responses": "0.2.0",
     "@types/semver": "^7.7.1",
     "@types/ssri": "^7.1.5",
     "arktype": "^2.1.29",
@@ -45,9 +47,11 @@
     "zx": "^8.8.5"
   },
   "overrides": {
+    "@intx/crypto": "workspace:*",
     "@intx/db": "workspace:*",
     "@intx/hub-api": "workspace:*",
     "@intx/hub-common": "workspace:*",
+    "@intx/log": "workspace:*",
     "@intx/types": "workspace:*",
     "arktype": "2.2.3"
   }

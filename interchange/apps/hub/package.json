@@ -12,8 +12,11 @@
   },
   "dependencies": {
     "@corbits/codex-provider": "catalog:",
-    "@corbits/mcp": "github:corbitsdev/corbits-mcp#9df1ab81d2f50d798bca2d2f44eb4759c92fac0e",
-    "@corbits/oauth-core": "github:corbitsdev/corbits-oauth-core#3028f8604155eee63f5a1711f0d4022d7984e3f7",
+    "@corbits/credential-http": "0.1.0",
+    "@corbits/mailbox": "0.2.0",
+    "@corbits/mcp": "0.2.0",
+    "@corbits/oauth-core": "catalog:",
+    "@corbits/openai-responses": "catalog:",
     "@intx/authz": "workspace:*",
     "@intx/crypto": "workspace:*",
     "@intx/db": "workspace:*",
@@ -21,6 +24,9 @@
     "@intx/hub-sessions": "workspace:*",
     "@intx/log": "workspace:*",
     "@intx/types": "workspace:*",
-    "hono": "catalog:"
+    "arktype": "catalog:",
+    "drizzle-orm": "catalog:",
+    "hono": "catalog:",
+    "postgres": "catalog:"
   }
 }
