@@ -29,6 +29,8 @@ export type Credential = {
   expiresAt: string | null
 }
 
+export type CodexModel = { id: string; name: string; description: string | null }
+
 export type LoginState =
   | { status: "pending" }
   | { status: "completed"; credentialId: string }
@@ -60,7 +62,7 @@ async function request<T>(
       body: body === undefined ? undefined : JSON.stringify(body),
     })
   } catch {
-    throw new HubError("Can't reach the hub. Is it running on port 3000?")
+    throw new HubError("Can't reach the Interchange hub.")
   }
   const text = await response.text()
   const data: unknown = text ? safeJson(text) : undefined
@@ -162,25 +164,49 @@ export async function findCodexCredential(
   return matches.at(-1) ?? null
 }
 
-export async function startCodexLogin(
+export async function startCodexDeviceLogin(
   tenantId: string,
   providerId: string,
   credentialName: string
-): Promise<{ loginId: string; authorizeUrl: string }> {
-  return request("POST", tenantPath(tenantId, "/oauth-logins"), {
-    provider: CODEX_PROVIDER,
+): Promise<{ loginId: string; verificationUrl: string; userCode: string }> {
+  return request("POST", tenantPath(tenantId, "/codex-device-logins"), {
     providerId,
     credentialName,
   })
 }
 
-export async function readLogin(
+export async function readDeviceLogin(
   tenantId: string,
   loginId: string
 ): Promise<LoginState> {
-  return request("GET", tenantPath(tenantId, `/oauth-logins/${loginId}`))
+  return request("GET", tenantPath(tenantId, `/codex-device-logins/${loginId}`))
 }
 
-export async function cancelLogin(tenantId: string, loginId: string) {
-  await request("DELETE", tenantPath(tenantId, `/oauth-logins/${loginId}`))
+export async function cancelDeviceLogin(tenantId: string, loginId: string) {
+  await request(
+    "DELETE",
+    tenantPath(tenantId, `/codex-device-logins/${loginId}`)
+  )
+}
+
+export async function shareCodexCredential(
+  tenantId: string,
+  credentialId: string
+) {
+  await request(
+    "POST",
+    tenantPath(
+      tenantId,
+      `/oauth-credentials/${encodeURIComponent(credentialId)}/share`
+    ),
+    {}
+  )
+}
+
+export async function listCodexModels(tenantId: string): Promise<CodexModel[]> {
+  const { models } = await request<{ models: CodexModel[] }>(
+    "GET",
+    tenantPath(tenantId, "/codex-models")
+  )
+  return models
 }

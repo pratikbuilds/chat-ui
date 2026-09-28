@@ -5,13 +5,14 @@ import {
   type FormEvent,
   type ReactNode,
 } from "react"
-import { CheckCircle2, ExternalLink, Loader2, X } from "lucide-react"
+import { Check, CheckCircle2, Copy, ExternalLink, Loader2, X } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import {
-  cancelLogin,
+  cancelDeviceLogin,
   ensureCodexProvider,
-  readLogin,
-  startCodexLogin,
+  readDeviceLogin,
+  shareCodexCredential,
+  startCodexDeviceLogin,
 } from "@/lib/hub"
 import type { Hub } from "./use-hub"
 
@@ -201,7 +202,12 @@ function SignInForm({ hub }: { hub: Hub }) {
 type LoginFlow =
   | { step: "idle" }
   | { step: "starting" }
-  | { step: "waiting"; loginId: string; authorizeUrl: string }
+  | {
+      step: "waiting"
+      loginId: string
+      verificationUrl: string
+      userCode: string
+    }
   | { step: "error"; message: string }
 
 function CodexCard({
@@ -214,6 +220,8 @@ function CodexCard({
   email: string
 }) {
   const [flow, setFlow] = useState<LoginFlow>({ step: "idle" })
+  const [copied, setCopied] = useState(false)
+  const [copyError, setCopyError] = useState(false)
   const pending = useRef<string | null>(null)
   const codex = hub.state.phase === "ready" ? hub.state.codex : undefined
   const { refreshCodex } = hub
@@ -224,12 +232,14 @@ function CodexCard({
     if (!waitingId) return
     let stopped = false
     const timer = window.setInterval(async () => {
+      if (pending.current !== waitingId) return
       try {
-        const login = await readLogin(tenantId, waitingId)
+        const login = await readDeviceLogin(tenantId, waitingId)
         if (stopped || login.status === "pending") return
         pending.current = null
         if (login.status === "completed") {
           setFlow({ step: "idle" })
+          await shareCodexCredential(tenantId, login.credentialId)
           await refreshCodex(tenantId)
         } else if (login.status === "failed") {
           setFlow({ step: "error", message: login.message })
@@ -251,31 +261,28 @@ function CodexCard({
     }
   }, [waitingId, tenantId, refreshCodex])
 
-  // An abandoned login holds the hub's fixed callback port; free it.
+  // Stop an abandoned device code login when the panel closes.
   useEffect(
     () => () => {
-      if (pending.current) void cancelLogin(tenantId, pending.current)
+      if (pending.current) void cancelDeviceLogin(tenantId, pending.current)
     },
     [tenantId]
   )
 
   async function connect() {
-    // Open the tab now, while the click still counts as a user gesture, so
-    // the browser does not block it once the hub answers.
-    const tab = window.open("", "_blank")
     setFlow({ step: "starting" })
+    setCopied(false)
+    setCopyError(false)
     try {
       const provider = await ensureCodexProvider(tenantId)
-      const login = await startCodexLogin(
+      const login = await startCodexDeviceLogin(
         tenantId,
         provider.id,
         codex?.name ?? `codex-${email}`
       )
       pending.current = login.loginId
-      if (tab) tab.location.href = login.authorizeUrl
       setFlow({ step: "waiting", ...login })
     } catch (cause) {
-      tab?.close()
       setFlow({
         step: "error",
         message: cause instanceof Error ? cause.message : String(cause),
@@ -287,7 +294,7 @@ function CodexCard({
     if (flow.step !== "waiting") return
     pending.current = null
     setFlow({ step: "idle" })
-    await cancelLogin(tenantId, flow.loginId).catch(() => undefined)
+    await cancelDeviceLogin(tenantId, flow.loginId).catch(() => undefined)
   }
 
   return (
@@ -299,7 +306,9 @@ function CodexCard({
             {codex === undefined
               ? "Checking…"
               : codex
-                ? `Connected · renews before ${formatDate(codex.expiresAt)}`
+                ? codex.expiresAt
+                  ? `Connected · renews before ${formatDate(codex.expiresAt)}`
+                  : "Connected"
                 : "GPT models on your ChatGPT subscription"}
           </p>
         </div>
@@ -310,12 +319,46 @@ function CodexCard({
 
       {flow.step === "waiting" ? (
         <div className="mt-4 space-y-3">
-          <Status>Finish signing in with ChatGPT in the new tab…</Status>
+          <Status>Open the ChatGPT sign-in page and enter this code:</Status>
+          <div className="flex items-center gap-2 rounded-lg bg-[#F6F4F0] px-3 py-2">
+            <code className="min-w-0 flex-1 select-all text-center text-lg font-semibold tracking-widest">
+              {flow.userCode}
+            </code>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-sm"
+              aria-label={copied ? "Code copied" : "Copy code"}
+              title={copied ? "Copied" : "Copy code"}
+              onClick={() => {
+                void navigator.clipboard.writeText(flow.userCode).then(
+                  () => setCopied(true),
+                  () => setCopyError(true)
+                )
+              }}
+            >
+              {copied ? <Check /> : <Copy />}
+            </Button>
+          </div>
+          {copyError && (
+            <p className="text-xs text-[#9B2C22]">
+              Couldn’t copy. Select the code above to copy it.
+            </p>
+          )}
+          <p className="text-xs text-muted-foreground">
+            Only enter this code if you started this connection. It expires in
+            15 minutes.
+          </p>
           <div className="flex gap-2">
             <Button
               variant="outline"
+              nativeButton={false}
               render={
-                <a href={flow.authorizeUrl} target="_blank" rel="noreferrer" />
+                <a
+                  href={flow.verificationUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                />
               }
             >
               <ExternalLink />
@@ -343,15 +386,14 @@ function CodexCard({
         <p className="mt-3 text-sm text-[#9B2C22]">{flow.message}</p>
       )}
       <p className="mt-3 text-xs text-muted-foreground">
-        Sign-in works only when this browser runs on the same computer as the
-        hub.
+        Connecting makes this subscription available to agents in this
+        workspace.
       </p>
     </div>
   )
 }
 
-function formatDate(value: string | null): string {
-  if (!value) return "it expires"
+function formatDate(value: string): string {
   return new Date(value).toLocaleDateString(undefined, {
     month: "short",
     day: "numeric",
