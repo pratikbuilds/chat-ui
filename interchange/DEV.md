@@ -117,14 +117,15 @@ Default ports: hub on 3000 and admin UI on 5173. Provisioned sidecars connect ou
 
 ### Signing in with Codex
 
-The hub mounts `@corbits/oauth-core`'s browser login for Codex ("Login with ChatGPT") and a refresher that renews the stored token ahead of expiry (`apps/hub/src/corbits.ts`). Codex has no API key, so this is the only way to mint a Codex credential.
+The hub mounts a Codex device-code login and `@corbits/oauth-core`'s refresher, which renews the stored token ahead of expiry (`apps/hub/src/corbits.ts`, `apps/hub/src/codex-device-login.ts`). The browser can run on a different machine from the hub. Enable device-code authentication in the ChatGPT account's security settings or workspace permissions first.
 
 1. Create a provider for the credential to be filed under: `POST /api/tenants/:tenantId/providers` with `{"name":"codex","plugin":"openai-responses","apiBaseUrl":"https://chatgpt.com/backend-api"}`.
-2. Start a login: `POST /api/tenants/:tenantId/oauth-logins` with `{"provider":"codex","providerId":"<provider id>","credentialName":"<name>"}`. The response carries a `loginId` and an `authorizeUrl`.
-3. Open `authorizeUrl` and sign in with ChatGPT.
-4. Poll `GET /api/tenants/:tenantId/oauth-logins/:loginId` until `status` is `completed`; it then names the `credentialId`. `DELETE` the same path cancels a pending login.
+2. Start a login: `POST /api/tenants/:tenantId/codex-device-logins` with `{"providerId":"<provider id>","credentialName":"<name>"}`. The response carries a `loginId`, `verificationUrl` and `userCode`.
+3. Open `verificationUrl`, sign in with ChatGPT and enter `userCode`. Only enter a code for a login you started yourself.
+4. Poll `GET /api/tenants/:tenantId/codex-device-logins/:loginId` until `status` is `completed`; it then names the `credentialId`. `DELETE` the same path cancels a pending login. Codes expire after 15 minutes.
+5. If a workspace agent should use the credential, share it with `POST /api/tenants/:tenantId/oauth-credentials/:credentialId/share`. This makes the user's ChatGPT subscription available to agents in that Interchange tenant.
 
-The login binds the Codex client's fixed redirect, `http://localhost:1455/auth/callback`, inside the hub process. Port 1455 must be free on the hub's machine, and the browser must run on that same machine: against a remote hub the redirect lands on the user's own computer and the login times out after five minutes. Only one login can hold the port at a time.
+Device logins are held in the hub process. Run one hub replica for this flow until login state is shared across replicas or requests are pinned to one replica.
 
 Serving inference with a Codex credential also needs the Codex adapter in the sidecar; `.env.sidecar.example` carries the `SIDECAR_ADAPTER_MANIFEST` entry for it.
 
