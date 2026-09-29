@@ -258,7 +258,7 @@ export function ChatThread({
               {loading
                 ? "Checking your workspace and chat agent."
                 : unavailable
-                ? "The local Interchange Hub is connected. Waiting for a chat agent."
+                ? "Interchange is connected. Waiting for a chat agent."
                 : "Ask a question to start this chat."}
             </p>
           </div>

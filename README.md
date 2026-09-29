@@ -21,12 +21,19 @@ environment variables and invocation.
 
 ## Deployment
 
-Serve the client and proxy `/api` to the Hub under one HTTPS origin. Set the
-Hub's `BETTER_AUTH_BASE_URL` to that origin so sign-in and session cookies
-match the client, and keep server-sent events streaming through the proxy.
-The deployment also needs a sidecar provisioner and Codex adapter. Device
-logins are held in Hub process memory, so use one Hub replica for login or
-pin login requests to a replica. Cloud deployment has not yet been verified.
+The Railway test project has separate `chat-ui`, `interchange-hub`, and Postgres
+services. The client proxies `/api` to the Hub over Railway's private network.
+Set `BETTER_AUTH_BASE_URL` to the client's public HTTPS origin so sign-in and
+session cookies match. The Hub uses a volume for its data and a single replica
+because device logins are held in process memory. Its Railway entry uses the
+existing local-process sidecar provisioner and loads the Codex adapter.
+
+The live deployment has passed page, OpenAPI, API proxy, and sign-in checks.
+Public email sign-up is disabled after creating the test account. To test an
+agent reply, connect Codex in the UI, register a catalog offering for an
+available model and the shared credential, then run
+`scripts/deploy-chat-agent.ts` against the client's origin. The local-process
+provisioner is intended for this single-instance test deployment.
 
 The vendored Interchange source is licensed under
 [`LGPL-2.1-only`](interchange/LICENSE). This repository has no license for
