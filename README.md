@@ -30,7 +30,7 @@ because device logins are held in process memory. Its Railway entry uses the
 existing local-process sidecar provisioner and loads the Codex adapter.
 
 The live deployment has passed page, OpenAPI, API proxy, and sign-in checks.
-Public email sign-up is disabled after creating the test account. To test an
+Public email sign-up is enabled so colleagues can create accounts. To test an
 agent reply, connect Codex in the UI, register a catalog offering for an
 available model and the shared credential, then run
 `scripts/deploy-chat-agent.ts` against the client's origin. The local-process

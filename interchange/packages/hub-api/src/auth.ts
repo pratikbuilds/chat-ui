@@ -8,7 +8,6 @@ export function createAuth(db: DB["db"]) {
     database: drizzleAdapter(db, { provider: "pg" }),
     emailAndPassword: {
       enabled: true,
-      disableSignUp: process.env["DISABLE_SIGNUP"] === "true",
     },
     socialProviders: {
       google: {
