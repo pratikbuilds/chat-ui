@@ -26,7 +26,17 @@ export function conversationMessages(conversation: Conversation): Message[] {
     }))
 }
 
+export const chatProgress = {
+  preparing: "Preparing your chat agent…",
+  starting: "Starting your chat agent…",
+  connecting: "Connecting to your chat agent…",
+  sending: "Sending your message…",
+  waiting: "Waiting for the model to reply…",
+  responding: "Receiving your reply…",
+}
+
 type Pending = {
+  phase: keyof typeof chatProgress
   prompt: string
   text: string
   repliesBefore: number
@@ -38,7 +48,8 @@ const causeMessage = (cause: unknown) =>
 export function useConversations(tenantId: string) {
   const [items, setItems] = useState<Conversation[]>([])
   const [loading, setLoading] = useState(true)
-  const [busy, setBusy] = useState(false)
+  const [operation, setOperation] = useState<string | null>(null)
+  const busy = operation !== null
   const [error, setError] = useState<string | null>(null)
   const [pending, setPending] = useState<Record<string, Pending>>({})
   const pendingRef = useRef(pending)
@@ -86,7 +97,6 @@ export function useConversations(tenantId: string) {
       if (!mounted.current || version !== readVersion.current) return
       setItems(conversations)
       setLoading(false)
-      setError(null)
       for (const conversation of conversations) {
         const history = conversationMessages(conversation)
         const last = history.at(-1)
@@ -98,6 +108,7 @@ export function useConversations(tenantId: string) {
           pendingRef.current = {
             ...pendingRef.current,
             [conversation.id]: {
+              phase: "waiting",
               prompt: last.text,
               text: "",
               streaming: false,
@@ -111,6 +122,7 @@ export function useConversations(tenantId: string) {
         const current = pendingRef.current[conversation.id]
         if (
           current &&
+          ["waiting", "responding"].includes(current.phase) &&
           ["failed", "released", "destroy_failed"].includes(conversation.status)
         ) {
           clearPending(conversation.id)
@@ -174,7 +186,7 @@ export function useConversations(tenantId: string) {
 
   const create = async () => {
     if (busy) return null
-    setBusy(true)
+    setOperation("Creating chat…")
     setError(null)
     try {
       const conversation = await createConversation(tenantId)
@@ -185,13 +197,13 @@ export function useConversations(tenantId: string) {
       setError(causeMessage(cause))
       return null
     } finally {
-      setBusy(false)
+      setOperation(null)
     }
   }
 
   const configure = async (conversation: Conversation, model: string) => {
     if (busy || pendingRef.current[conversation.id]) return
-    setBusy(true)
+    setOperation("Changing model…")
     setError(null)
     try {
       const updated = await updateConversation(tenantId, conversation, model)
@@ -202,7 +214,7 @@ export function useConversations(tenantId: string) {
     } catch (cause) {
       setError(causeMessage(cause))
     } finally {
-      setBusy(false)
+      setOperation(null)
     }
   }
 
@@ -213,6 +225,7 @@ export function useConversations(tenantId: string) {
     pendingRef.current = {
       ...pendingRef.current,
       [conversation.id]: {
+        phase: "preparing",
         prompt,
         text: "",
         streaming: true,
@@ -222,6 +235,15 @@ export function useConversations(tenantId: string) {
     }
     setPending(pendingRef.current)
     setError(null)
+    const progress = (phase: Pending["phase"]) => {
+      const current = pendingRef.current[conversation.id]
+      if (!current) return
+      pendingRef.current = {
+        ...pendingRef.current,
+        [conversation.id]: { ...current, phase },
+      }
+      setPending(pendingRef.current)
+    }
     try {
       let updated = conversation
       if (["failed", "released", "destroy_failed"].includes(updated.status))
@@ -239,6 +261,7 @@ export function useConversations(tenantId: string) {
         current.map((item) => (item.id === updated.id ? updated : item))
       )
       if (updated.status !== "deployed") {
+        progress("starting")
         const deadline = Date.now() + 45_000
         while (updated.status !== "deployed" && Date.now() < deadline) {
           await new Promise((resolve) => window.setTimeout(resolve, 1000))
@@ -268,6 +291,7 @@ export function useConversations(tenantId: string) {
             MESSAGE_SEPARATOR +
             prompt
           : prompt
+      progress("connecting")
       const source = openChatEvents(conversation.id, updated.deploymentId)
       const timer = window.setTimeout(() => stop(conversation.id), 120_000)
       streams.current.set(conversation.id, { source, timer })
@@ -284,7 +308,11 @@ export function useConversations(tenantId: string) {
         if (current) {
           pendingRef.current = {
             ...pendingRef.current,
-            [conversation.id]: { ...current, text: current.text + data.token },
+            [conversation.id]: {
+              ...current,
+              phase: "responding",
+              text: current.text + data.token,
+            },
           }
           setPending(pendingRef.current)
         }
@@ -312,7 +340,10 @@ export function useConversations(tenantId: string) {
           { once: true }
         )
       })
+      progress("sending")
       await sendMailbox(conversation.id, address, body)
+      if (pendingRef.current[conversation.id]?.phase === "sending")
+        progress("waiting")
       void reload().catch(() => undefined)
       return true
     } catch (cause) {
@@ -333,6 +364,7 @@ export function useConversations(tenantId: string) {
     items,
     loading,
     busy,
+    operation,
     error,
     pending,
     create,

@@ -1,12 +1,12 @@
 import { useCallback, useState } from "react"
-import { Menu, Share2 } from "lucide-react"
+import { Loader2, Menu, Share2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Sidebar } from "@/chat/sidebar"
 import { ChatThread } from "@/chat/thread"
 import { Composer } from "@/chat/composer"
 import { CodexPanel } from "./codex-panel"
 import type { Hub } from "./use-hub"
-import { useConversations } from "./use-conversations"
+import { chatProgress, useConversations } from "./use-conversations"
 
 export function LiveWorkspace({
   hub,
@@ -80,6 +80,7 @@ export function LiveWorkspace({
         reply: pending.text,
         booking: false,
         live: true as const,
+        status: chatProgress[pending.phase],
       }
     : null
   const newChat = async () => {
@@ -103,6 +104,7 @@ export function LiveWorkspace({
       <Sidebar
         chats={chats}
         canCreate={!conversations.busy && !conversations.loading}
+        creating={conversations.operation === "Creating chat…"}
         activeId={chat.id}
         query={query}
         onQueryChange={setQuery}
@@ -140,15 +142,31 @@ export function LiveWorkspace({
             </Button>
             <h1 className="truncate text-base font-semibold">{chat.title}</h1>
           </div>
-          <Button
-            variant="outline"
-            className="h-8"
-            onClick={() => void share()}
-            disabled={!chat.messages.length}
-          >
-            <Share2 />
-            {copied ? "Copied" : "Share"}
-          </Button>
+          <div className="flex shrink-0 items-center gap-2">
+            {selected && (
+              <span
+                className="flex h-8 items-center gap-1.5 rounded-md border border-[#ECE9E4] bg-[#FAF9F7] px-2 text-xs text-muted-foreground"
+                title={`Child tenant ID: ${selected.id}`}
+              >
+                <span className="hidden sm:inline">Tenant</span>
+                <code
+                  className="max-w-[110px] truncate select-text sm:max-w-none"
+                  aria-label="Child tenant ID"
+                >
+                  {selected.id}
+                </code>
+              </span>
+            )}
+            <Button
+              variant="outline"
+              className="h-8"
+              onClick={() => void share()}
+              disabled={!chat.messages.length}
+            >
+              <Share2 />
+              {copied ? "Copied" : "Share"}
+            </Button>
+          </div>
         </header>
         <ChatThread
           chat={chat}
@@ -187,12 +205,16 @@ export function LiveWorkspace({
               Retry message
             </Button>
           )}
-        {starting && (
+        {(conversations.operation || (starting && !pending)) && (
           <p
             role="status"
-            className="px-4 text-center text-sm text-muted-foreground"
+            className="flex items-center justify-center gap-2 px-4 py-3 text-sm text-muted-foreground"
           >
-            Starting this chat's agent…
+            <Loader2
+              aria-hidden="true"
+              className="size-4 animate-spin motion-reduce:animate-none"
+            />
+            {conversations.operation ?? "Starting your chat agent…"}
           </p>
         )}
         {!selected && !conversations.loading && (
@@ -212,6 +234,16 @@ export function LiveWorkspace({
             Waiting for reply. You can use another chat meanwhile.
           </p>
         )}
+        {selected &&
+          !chat.messages.length &&
+          !pending &&
+          !conversations.busy &&
+          !starting && (
+            <p className="px-4 py-3 text-center text-sm text-muted-foreground">
+              Send a message to start this chat. The first reply can take a
+              little longer while your agent starts.
+            </p>
+          )}
         <Composer
           key={selected?.id ?? "empty"}
           workingHere={!!pending?.streaming}
@@ -220,6 +252,16 @@ export function LiveWorkspace({
           liveModel={selected?.model}
           liveEffort={selected?.effort}
           settingsDisabled={!!pending || conversations.busy || starting}
+          statusHint={
+            conversations.operation ??
+            (pending
+              ? chatProgress[pending.phase]
+              : conversations.loading
+                ? "Loading your chats…"
+                : !selected
+                  ? "Create a chat to send a message."
+                  : "Starting your chat agent…")
+          }
           onModelChange={(model) => {
             if (selected) void conversations.configure(selected, model)
           }}

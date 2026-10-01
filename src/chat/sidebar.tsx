@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react"
-import { MoreHorizontal, Plus, Search } from "lucide-react"
+import { Loader2, MoreHorizontal, Plus, Search } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
 import type { Chat } from "./mock"
@@ -7,6 +7,7 @@ import type { Chat } from "./mock"
 type SidebarProps = {
   chats: Chat[]
   canCreate: boolean
+  creating?: boolean
   activeId: number
   query: string
   mobileOpen: boolean
@@ -22,6 +23,7 @@ type SidebarProps = {
 export function Sidebar({
   chats,
   canCreate,
+  creating = false,
   activeId,
   query,
   mobileOpen,
@@ -73,12 +75,16 @@ export function Sidebar({
           <Button
             variant="outline"
             size="icon-sm"
-            aria-label="New chat"
-            title="New chat"
+            aria-label={creating ? "Creating chat" : "New chat"}
+            title={creating ? "Creating chat…" : "New chat"}
             disabled={!canCreate}
             onClick={onNew}
           >
-            <Plus />
+            {creating ? (
+              <Loader2 className="animate-spin motion-reduce:animate-none" />
+            ) : (
+              <Plus />
+            )}
           </Button>
         </div>
         <div className="px-4 pb-3">
