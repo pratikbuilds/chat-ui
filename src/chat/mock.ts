@@ -19,6 +19,7 @@ export type Stream = {
   booking: boolean
   /** A real reply streaming from the hub's chat agent, not the demo. */
   live?: true
+  status?: string
 }
 
 export const dinnerReply =

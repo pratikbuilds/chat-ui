@@ -4,6 +4,7 @@ import {
   ChevronDown,
   ChevronUp,
   Copy,
+  Loader2,
   Paperclip,
   RotateCcw,
 } from "lucide-react"
@@ -258,8 +259,8 @@ export function ChatThread({
               {loading
                 ? "Checking your workspace and chat agent."
                 : unavailable
-                ? "Interchange is connected. Waiting for a chat agent."
-                : "Ask a question to start this chat."}
+                  ? "Interchange is connected. Waiting for a chat agent."
+                  : "Ask a question to start this chat."}
             </p>
           </div>
         )}
@@ -297,8 +298,15 @@ export function ChatThread({
                 <span className="ml-0.5 inline-block h-[17px] w-[8px] animate-pulse bg-[#1F1B18] align-middle" />
               </p>
             ) : (
-              <div className="text-sm font-medium text-[#6E6862]">
-                Thinking...
+              <div
+                role="status"
+                className="flex items-center gap-2 text-sm font-medium text-[#6E6862]"
+              >
+                <Loader2
+                  aria-hidden="true"
+                  className="size-4 animate-spin motion-reduce:animate-none"
+                />
+                {stream.status ?? "Thinking…"}
               </div>
             )}
           </div>

@@ -27,6 +27,7 @@ export function Composer({
   liveModel,
   liveEffort,
   settingsDisabled,
+  statusHint,
   onModelChange,
   onEffortChange,
   onSend,
@@ -39,6 +40,7 @@ export function Composer({
   liveModel?: string
   liveEffort?: "low" | "medium" | "high"
   settingsDisabled?: boolean
+  statusHint?: string
   onModelChange?: (model: string) => void
   onEffortChange?: (effort: "low" | "medium" | "high") => void
   onSend: (
@@ -281,9 +283,10 @@ export function Composer({
       </div>
       {codexTenantId && unavailable && (
         <p className="mx-auto mt-2 max-w-[720px] text-xs text-muted-foreground">
-          {liveModel
-            ? "Loading the Interchange conversation…"
-            : "Codex is connected. Deploy the Interchange chat agent to send messages."}
+          {statusHint ??
+            (liveModel
+              ? "Loading the Interchange conversation…"
+              : "Codex is connected. Deploy the Interchange chat agent to send messages.")}
         </p>
       )}
       {currentCatalog?.error && (
