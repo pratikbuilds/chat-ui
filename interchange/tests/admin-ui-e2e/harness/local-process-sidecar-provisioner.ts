@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { createHash } from "node:crypto";
 
 import type {
   DestroySidecarRequest,
@@ -23,6 +24,7 @@ export type SpawnLocalSidecar = (args: {
 
 export type CreateLocalProcessSidecarProvisionerOpts = {
   readonly dataRoot: string;
+  readonly persistentData?: boolean;
   readonly spawnSidecar?: SpawnLocalSidecar;
   readonly stopTimeoutMs?: number;
 };
@@ -66,6 +68,7 @@ function spawnSidecarProcess({
         SIDECAR_TOKEN: request.token,
         SIDECAR_DATA_DIR: dataDir,
         SIDECAR_CREDENTIAL_ENCRYPTION_KEY:
+          process.env["SIDECAR_CREDENTIAL_ENCRYPTION_KEY"] ??
           "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff",
       },
       stdin: "ignore",
@@ -102,6 +105,7 @@ function exitedWithin(
 
 export function createLocalProcessSidecarProvisioner({
   dataRoot,
+  persistentData = false,
   spawnSidecar = spawnSidecarProcess,
   stopTimeoutMs = DEFAULT_STOP_TIMEOUT_MS,
 }: CreateLocalProcessSidecarProvisionerOpts): LocalProcessSidecarProvisioner {
@@ -138,6 +142,7 @@ export function createLocalProcessSidecarProvisioner({
 
   async function stopAndRemove(
     state: Extract<AllocationState, { kind: "live" }>,
+    removeData = true,
   ): Promise<void> {
     if (!state.process.exited) {
       try {
@@ -154,7 +159,8 @@ export function createLocalProcessSidecarProvisioner({
         }
       }
     }
-    await fs.rm(state.dataDir, { recursive: true, force: true });
+    if (removeData)
+      await fs.rm(state.dataDir, { recursive: true, force: true });
   }
 
   async function ensure(request: EnsureSidecarRequest) {
@@ -210,9 +216,21 @@ export function createLocalProcessSidecarProvisioner({
     }
 
     await fs.mkdir(dataRoot, { recursive: true });
-    const dataDir = await fs.mkdtemp(
-      path.join(dataRoot, `${request.allocationId}-`),
-    );
+    const dataDir = persistentData
+      ? path.join(
+          dataRoot,
+          createHash("sha256")
+            .update(
+              JSON.stringify([
+                request.allocationId,
+                request.generation,
+                request.sidecarId,
+              ]),
+            )
+            .digest("hex"),
+        )
+      : await fs.mkdtemp(path.join(dataRoot, `${request.allocationId}-`));
+    if (persistentData) await fs.mkdir(dataDir, { recursive: true });
     try {
       request.signal?.throwIfAborted();
       const handle = spawnSidecar({ request, dataDir });
@@ -229,7 +247,8 @@ export function createLocalProcessSidecarProvisioner({
       });
       return { kind: "accepted" as const, externalRef: String(handle.pid) };
     } catch (error) {
-      await fs.rm(dataDir, { recursive: true, force: true });
+      if (!persistentData)
+        await fs.rm(dataDir, { recursive: true, force: true });
       return {
         kind: "rejected" as const,
         code: "spawn_failed",
@@ -281,13 +300,15 @@ export function createLocalProcessSidecarProvisioner({
         for (const state of allocations.values()) {
           if (state.kind !== "live") continue;
           try {
-            await stopAndRemove(state);
+            await stopAndRemove(state, !persistentData);
           } catch (error) {
             failures.push(error);
           }
         }
         allocations.clear();
-        await fs.rm(dataRoot, { recursive: true, force: true });
+        if (!persistentData) {
+          await fs.rm(dataRoot, { recursive: true, force: true });
+        }
         if (failures.length > 0) {
           throw new AggregateError(
             failures,

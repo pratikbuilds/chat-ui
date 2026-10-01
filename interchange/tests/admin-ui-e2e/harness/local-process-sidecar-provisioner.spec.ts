@@ -161,6 +161,40 @@ test.describe("createLocalProcessSidecarProvisioner", () => {
     await local.shutdown();
   });
 
+  test("keeps sidecar data across a Hub restart", async () => {
+    const dataRoot = await fs.mkdtemp(
+      path.join(os.tmpdir(), "intx-persistent-sidecar-"),
+    );
+    tempDirs.push(dataRoot);
+    const dirs: string[] = [];
+    const start = () =>
+      createLocalProcessSidecarProvisioner({
+        dataRoot,
+        persistentData: true,
+        spawnSidecar({ dataDir }) {
+          dirs.push(dataDir);
+          return createFakeProcess(1000 + dirs.length).process;
+        },
+      });
+
+    const first = start();
+    await first.provisioner.ensure(createRequest());
+    const dataDir = dirs[0];
+    if (!dataDir) throw new Error("Missing sidecar data directory");
+    await fs.writeFile(path.join(dataDir, "state"), "retained");
+    await first.shutdown();
+
+    const second = start();
+    await second.provisioner.ensure(createRequest());
+    expect(dirs[1]).toBe(dataDir);
+    expect(await fs.readFile(path.join(dataDir, "state"), "utf8")).toBe(
+      "retained",
+    );
+    await second.provisioner.destroy(createRequest());
+    await expect(fs.stat(dataDir)).rejects.toMatchObject({ code: "ENOENT" });
+    await second.shutdown();
+  });
+
   test("fences destroyed and stale generations", async () => {
     const { local } = await createHarness();
 

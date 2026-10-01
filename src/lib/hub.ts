@@ -29,7 +29,11 @@ export type Credential = {
   expiresAt: string | null
 }
 
-export type CodexModel = { id: string; name: string; description: string | null }
+export type CodexModel = {
+  id: string
+  name: string
+  description: string | null
+}
 
 export type LoginState =
   | { status: "pending" }
@@ -47,7 +51,7 @@ export class HubError extends Error {
   }
 }
 
-async function request<T>(
+export async function request<T>(
   method: string,
   path: string,
   body?: unknown
@@ -56,6 +60,7 @@ async function request<T>(
   try {
     response = await fetch(path, {
       method,
+      signal: AbortSignal.timeout(30_000),
       credentials: "same-origin",
       headers:
         body === undefined ? undefined : { "content-type": "application/json" },
@@ -287,10 +292,22 @@ export async function listMailbox(
   tenantId: string,
   folder: MailboxFolder
 ): Promise<MailboxMessage[]> {
-  const { messages } = await request<{ messages: RawMailboxMessage[] }>(
-    "GET",
-    tenantPath(tenantId, `/mailbox/me/inbox?folder=${folder}&limit=100`)
-  )
+  const messages: RawMailboxMessage[] = []
+  let cursor: string | undefined
+  do {
+    const page = await request<{
+      messages: RawMailboxMessage[]
+      nextCursor?: string
+    }>(
+      "GET",
+      tenantPath(
+        tenantId,
+        `/mailbox/me/inbox?folder=${folder}&limit=100${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`
+      )
+    )
+    messages.push(...page.messages)
+    cursor = page.nextCursor
+  } while (cursor)
   return messages.map((message) => ({
     uid: message.uid,
     folder,

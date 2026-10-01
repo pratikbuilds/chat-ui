@@ -5,18 +5,23 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc -b && vite build",
+    "build": "bun run build:agent && tsc -b && vite build",
     "lint": "eslint .",
     "format": "prettier --write \"**/*.{ts,tsx}\"",
     "typecheck": "tsc --noEmit",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "build:agent": "bun --conditions=intx-src scripts/build-chat-runtime.ts"
   },
   "dependencies": {
     "@base-ui/react": "^1.8.0",
     "@fontsource-variable/geist": "^5.3.0",
+    "@isomorphic-git/lightning-fs": "^4.10.3",
     "@tailwindcss/vite": "^4",
+    "arktype": "^2.2.6",
+    "buffer": "^6.0.3",
     "class-variance-authority": "^0.7.1",
     "cn": "^0.4.0",
+    "isomorphic-git": "^1.42.6",
     "lucide-react": "^1.48.0",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",

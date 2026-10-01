@@ -31,4 +31,12 @@ export default defineConfig({
       },
     },
   },
+  preview: {
+    allowedHosts: process.env.RAILWAY_PUBLIC_DOMAIN
+      ? [process.env.RAILWAY_PUBLIC_DOMAIN]
+      : [],
+    proxy: {
+      "/api": process.env.HUB_URL ?? HUB_URL,
+    },
+  },
 })
