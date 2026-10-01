@@ -22,6 +22,11 @@ environment variables and invocation.
 
 ## Deployment
 
+Deploy production only from a clean `main` checkout after merging the PR.
+Do not upload feature branches or uncommitted work to Railway. Run
+`git pull --ff-only` on `main`, then deploy the UI from the repository root
+and the Hub from `interchange/`.
+
 The Railway test project has separate `chat-ui`, `interchange-hub`, and Postgres
 services. The client proxies `/api` to the Hub over Railway's private network.
 Set `BETTER_AUTH_BASE_URL` to the client's public HTTPS origin so sign-in and
