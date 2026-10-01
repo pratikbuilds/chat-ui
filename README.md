@@ -1,7 +1,8 @@
 # Interchange Chat UI
 
 A React chat client for an Interchange Hub. It signs in to ChatGPT with a
-Codex device code, shows the account's available models, and displays live
+Codex device code, keeps separate conversations, lets you switch between the
+account's available models, and displays live
 agent replies. The Hub and sidecar integration lives in the vendored
 `interchange/` source.
 
@@ -38,3 +39,9 @@ provisioner is intended for this single-instance test deployment.
 The vendored Interchange source is licensed under
 [`LGPL-2.1-only`](interchange/LICENSE). This repository has no license for
 the chat client itself.
+
+Each chat is a child tenant, following Workbench. The sidebar lists owned child tenants; their `Sent` and `INBOX` mailboxes supply the complete transcript. Model changes publish the workflow asset and redeploy through stock catalog, Git and workflow APIs. No chat-specific Hub route or database table is used. Old workspace mail remains available under Previous chats.
+
+`bun run build` generates the workflow runtime bundle from `agents/chat/workflow.ts` before building the UI. Install dependencies in both this directory and `interchange/` first.
+
+Run `bun --tsconfig-override tsconfig.app.json scripts/check-conversations.ts` for the mailbox isolation and redeployment-history check.

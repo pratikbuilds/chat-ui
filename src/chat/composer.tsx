@@ -25,6 +25,10 @@ export function Composer({
   unavailable,
   codexTenantId,
   liveModel,
+  liveEffort,
+  settingsDisabled,
+  onModelChange,
+  onEffortChange,
   onSend,
   onStop,
 }: {
@@ -33,7 +37,14 @@ export function Composer({
   codexTenantId?: string
   /** The model the live chat agent runs on; replaces the demo choices. */
   liveModel?: string
-  onSend: (text: string, attachmentName?: string) => void
+  liveEffort?: "low" | "medium" | "high"
+  settingsDisabled?: boolean
+  onModelChange?: (model: string) => void
+  onEffortChange?: (effort: "low" | "medium" | "high") => void
+  onSend: (
+    text: string,
+    attachmentName?: string
+  ) => void | boolean | Promise<boolean | undefined>
   onStop: () => void
 }) {
   const [draft, setDraft] = useState("")
@@ -89,18 +100,18 @@ export function Composer({
   if (liveModel && !models.some((entry) => entry.value === liveModel)) {
     models.unshift({ label: liveModel, value: liveModel })
   }
-  const selectedModel =
-    liveModel
-      ? liveModel
-      : models.some((entry) => entry.value === model)
-        ? model
-        : models[0]?.value
+  const selectedModel = liveModel
+    ? liveModel
+    : models.some((entry) => entry.value === model)
+      ? model
+      : models[0]?.value
 
-  function send() {
+  async function send() {
     const text = draft.trim()
     if (!text || workingHere || unavailable) return
-    onSend(text, attachment?.name)
-    setDraft("")
+    const sent = await onSend(text, attachment?.name)
+    if (sent === false) return
+    setDraft((current) => (current.trim() === text ? "" : current))
     setAttachment(null)
     if (fileInput.current) fileInput.current.value = ""
   }
@@ -165,62 +176,79 @@ export function Composer({
               className="size-[30px] rounded-full"
               title="Attach file"
               aria-label="Attach file"
-              disabled={unavailable}
+              disabled={unavailable || !!onModelChange}
               onClick={() => fileInput.current?.click()}
             >
               <Plus />
             </Button>
-            <Select
-              items={effortOptions}
-              value={effort}
-              onValueChange={(value) => value && setEffort(value)}
-            >
-              <SelectTrigger
-                aria-label="Reasoning effort"
-                className="h-[30px] rounded-full border-0 bg-[#F1EFEB] px-2.5 text-[13px] font-medium shadow-none hover:bg-[#EAE7E2]"
+            {(!onModelChange || onEffortChange) && (
+              <Select
+                items={effortOptions}
+                value={
+                  liveEffort
+                    ? liveEffort[0].toUpperCase() + liveEffort.slice(1)
+                    : effort
+                }
+                disabled={
+                  settingsDisabled || (!!onModelChange && !onEffortChange)
+                }
+                onValueChange={(value) => {
+                  if (!value) return
+                  if (onEffortChange) {
+                    const next = value.toLowerCase()
+                    if (next === "low" || next === "medium" || next === "high")
+                      onEffortChange(next)
+                  } else setEffort(value)
+                }}
               >
-                <span className="flex items-end gap-[2px]" aria-hidden="true">
-                  <span className="h-1.5 w-[3px] rounded-sm bg-[#1F1B18]" />
-                  <span className="h-2 w-[3px] rounded-sm bg-[#1F1B18]" />
-                  <span className="h-3 w-[3px] rounded-sm bg-[#C9C3BC]" />
-                </span>
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent
-                side="top"
-                align="start"
-                alignItemWithTrigger={false}
-                className="min-w-32 border border-[#ECE9E4] p-1 shadow-[0_8px_24px_#1F1B1814]"
-              >
-                {effortOptions.map((option) => (
-                  <SelectItem
-                    key={option.value}
-                    value={option.value}
-                    className="px-2.5 py-2 text-[13px] focus:bg-[#F1EFEB]"
-                  >
-                    {option.label}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+                <SelectTrigger
+                  aria-label="Reasoning effort"
+                  className="h-[30px] rounded-full border-0 bg-[#F1EFEB] px-2.5 text-[13px] font-medium shadow-none hover:bg-[#EAE7E2]"
+                >
+                  <span className="flex items-end gap-[2px]" aria-hidden="true">
+                    <span className="h-1.5 w-[3px] rounded-sm bg-[#1F1B18]" />
+                    <span className="h-2 w-[3px] rounded-sm bg-[#1F1B18]" />
+                    <span className="h-3 w-[3px] rounded-sm bg-[#C9C3BC]" />
+                  </span>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent
+                  side="top"
+                  align="start"
+                  alignItemWithTrigger={false}
+                  className="min-w-32 border border-[#ECE9E4] p-1 shadow-[0_8px_24px_#1F1B1814]"
+                >
+                  {effortOptions.map((option) => (
+                    <SelectItem
+                      key={option.value}
+                      value={option.value}
+                      className="px-2.5 py-2 text-[13px] focus:bg-[#F1EFEB]"
+                    >
+                      {option.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            )}
           </div>
           <div className="flex items-center gap-2">
             <select
               aria-label="Model"
               value={selectedModel}
-              onChange={(event) => setModel(event.target.value)}
+              onChange={(event) =>
+                onModelChange
+                  ? onModelChange(event.target.value)
+                  : setModel(event.target.value)
+              }
               disabled={
+                settingsDisabled ||
                 (unavailable && !codexTenantId) ||
                 (codexTenantId !== undefined && !currentCatalog?.models.length)
               }
               className="h-[30px] max-w-36 cursor-pointer rounded-lg border-0 bg-transparent px-2 text-[13px] text-[#6E6862] outline-none hover:bg-[#F1EFEB] focus-visible:ring-2 focus-visible:ring-[#D9772B]"
             >
               {models.map((option) => (
-                <option
-                  key={option.value}
-                  value={option.value}
-                  disabled={liveModel !== undefined && option.value !== liveModel}
-                >
+                <option key={option.value} value={option.value}>
                   {option.label}
                 </option>
               ))}

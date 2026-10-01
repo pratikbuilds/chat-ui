@@ -1,3 +1,4 @@
+import { ownedTenants } from "@/lib/workbench"
 import { useCallback, useEffect, useState } from "react"
 import {
   findChatDeployment,
@@ -50,7 +51,18 @@ async function readHub(): Promise<HubState> {
   try {
     const user = await getSession()
     if (!user) return { phase: "signed-out" }
-    const workspaces = await listWorkspaces()
+    const [allWorkspaces, tenants] = await Promise.all([
+      listWorkspaces(),
+      ownedTenants(),
+    ])
+    const roots = new Set(
+      tenants
+        .filter((tenant) => tenant.parentId === null)
+        .map((tenant) => tenant.id)
+    )
+    const workspaces = allWorkspaces.filter((workspace) =>
+      roots.has(workspace.tenantId)
+    )
     const tenantId = rememberedWorkspace(workspaces)
     const codex = tenantId ? await loadCodex(tenantId) : null
     const chat = tenantId ? await findChatDeployment(tenantId) : null

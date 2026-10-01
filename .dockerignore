@@ -2,4 +2,6 @@
 .env*
 node_modules
 dist
-interchange
+interchange/.env*
+interchange/node_modules
+interchange/tmp

@@ -13,10 +13,9 @@ import { ChatThread } from "@/chat/thread"
 import { Sidebar } from "@/chat/sidebar"
 import { CodexPanel } from "@/connect/codex-panel"
 import { useHub, type HubState } from "@/connect/use-hub"
-import { useLiveChat } from "@/connect/use-live-chat"
+import { LiveWorkspace } from "@/connect/live-workspace"
 import type { Chat } from "@/chat/mock"
 
-const LIVE_MODEL = "gpt-5.5"
 /** The one conversation with the hub's chat agent (ids of demo chats are > 0). */
 const LIVE_CHAT_ID = -1
 
@@ -60,62 +59,22 @@ export default function App() {
   const closeAccount = useCallback(() => setAccountOpen(false), [])
   const hubLoading = hub.state.phase === "loading"
   const connected = hub.state.phase === "ready" && !!hub.state.codex
-  // The hub's chat agent answers when Codex is connected and deployed;
-  // otherwise the demo replies stay in place.
-  const live =
-    hub.state.phase === "ready" &&
-    hub.state.tenantId &&
-    hub.state.codex &&
-    hub.state.chat
-      ? { tenantId: hub.state.tenantId, deploymentId: hub.state.chat }
-      : null
-  const liveChat = useLiveChat(
-    live?.tenantId ?? null,
-    live?.deploymentId ?? null
-  )
-  // With the agent live, the mailbox conversation replaces the demo chats.
-  const liveThread: Chat | null =
-    live && liveChat.messages
+  const waitingThread: Chat | null =
+    connected || hubLoading
       ? {
           id: LIVE_CHAT_ID,
           title: "Codex",
-          preview:
-            liveChat.error ??
-            liveChat.messages.at(-1)?.text ??
-            "Start a conversation",
-          time: "Now",
-          messages: liveChat.messages,
-        }
-      : null
-  const waitingThread: Chat | null = connected || hubLoading
-    ? {
-        id: LIVE_CHAT_ID,
-        title: "Codex",
-        preview: hubLoading
-          ? "Connecting to Interchange"
-          : live
-            ? "Loading conversation"
+          preview: hubLoading
+            ? "Connecting to Interchange"
             : "Agent not deployed",
-        time: "Now",
-        messages: [],
-      }
-    : null
-  const visibleChats = liveThread ? [liveThread] : waitingThread ? [waitingThread] : chats
-  const chat = liveThread ?? waitingThread ?? chats.find((item) => item.id === activeId)!
-  const chatUnavailable = !liveThread && (connected || hubLoading)
-  const shownStream = liveThread
-    ? liveChat.pending
-      ? {
-          chatId: LIVE_CHAT_ID,
-          step: 0,
-          reply: liveChat.pending.text,
-          booking: false,
-          live: true as const,
+          time: "Now",
+          messages: [],
         }
       : null
-    : chatUnavailable
-      ? null
-      : stream
+  const visibleChats = waitingThread ? [waitingThread] : chats
+  const chat = waitingThread ?? chats.find((item) => item.id === activeId)!
+  const chatUnavailable = connected || hubLoading
+  const shownStream = chatUnavailable ? null : stream
   const workingHere = shownStream?.chatId === chat.id
   const openSidebar = useCallback(() => setMobileOpen(true), [])
 
@@ -147,10 +106,6 @@ export default function App() {
   }, [connected, hubLoading, stream])
 
   function send(text: string, attachmentName?: string) {
-    if (liveThread) {
-      liveChat.send(text)
-      return
-    }
     if (connected || hubLoading) return
     if (!text || stream) return
     setChats((items) =>
@@ -176,10 +131,6 @@ export default function App() {
   }
 
   function stop() {
-    if (liveThread) {
-      liveChat.stop()
-      return
-    }
     if (!stream) return
 
     const text = stream.reply.slice(0, Math.max(0, stream.step - 15) * 4)
@@ -210,11 +161,6 @@ export default function App() {
       chat.messages
         .slice(0, index)
         .findLast((message) => message.role === "user")?.text ?? ""
-    // A live reply is on record in the mailbox; regenerating asks again.
-    if (liveThread) {
-      liveChat.send(previousPrompt)
-      return
-    }
     setChats((items) =>
       items.map((item) =>
         item.id === activeId
@@ -230,7 +176,6 @@ export default function App() {
   }
 
   function newChat() {
-    // The agent keeps one memory, so there is one live conversation.
     if (connected || hubLoading) return
     if (stream) stop()
     const id = Date.now()
@@ -260,6 +205,16 @@ export default function App() {
     )
     setShared(true)
     window.setTimeout(() => setShared(false), 1600)
+  }
+
+  if (hub.state.phase === "ready" && hub.state.codex && hub.state.tenantId) {
+    return (
+      <LiveWorkspace
+        key={hub.state.tenantId}
+        hub={hub}
+        tenantId={hub.state.tenantId}
+      />
+    )
   }
 
   return (
@@ -344,7 +299,7 @@ export default function App() {
         <ChatThread
           chat={chat}
           stream={shownStream}
-          live={!!liveThread}
+          live={false}
           unavailable={chatUnavailable}
           loading={hubLoading}
           onRegenerate={regenerate}
@@ -358,7 +313,6 @@ export default function App() {
               ? hub.state.tenantId
               : undefined
           }
-          liveModel={live ? LIVE_MODEL : undefined}
           onSend={send}
           onStop={stop}
         />
