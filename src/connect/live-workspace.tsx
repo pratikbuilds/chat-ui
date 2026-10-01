@@ -68,7 +68,6 @@ export function LiveWorkspace({
       selected.status
     )
   const unavailable =
-    selected?.archive ||
     conversations.loading ||
     conversations.busy ||
     starting ||
@@ -174,7 +173,6 @@ export function LiveWorkspace({
           </p>
         )}
         {selected &&
-          !selected.archive &&
           !pending &&
           !conversations.busy &&
           ["failed", "released", "destroy_failed"].includes(selected.status) &&
@@ -214,33 +212,24 @@ export function LiveWorkspace({
             Waiting for reply. You can use another chat meanwhile.
           </p>
         )}
-        {selected?.archive ? (
-          <p
-            role="status"
-            className="p-4 text-center text-sm text-muted-foreground"
-          >
-            Previous mail is preserved here. Start a new chat to continue.
-          </p>
-        ) : (
-          <Composer
-            key={selected?.id ?? "empty"}
-            workingHere={!!pending?.streaming}
-            unavailable={unavailable}
-            codexTenantId={tenantId}
-            liveModel={selected?.model}
-            liveEffort={selected?.effort}
-            settingsDisabled={!!pending || conversations.busy || starting}
-            onModelChange={(model) => {
-              if (selected) void conversations.configure(selected, model)
-            }}
-            onSend={(text) =>
-              selected ? conversations.send(selected, text) : false
-            }
-            onStop={() => {
-              if (selected) conversations.stop(selected.id)
-            }}
-          />
-        )}
+        <Composer
+          key={selected?.id ?? "empty"}
+          workingHere={!!pending?.streaming}
+          unavailable={unavailable}
+          codexTenantId={tenantId}
+          liveModel={selected?.model}
+          liveEffort={selected?.effort}
+          settingsDisabled={!!pending || conversations.busy || starting}
+          onModelChange={(model) => {
+            if (selected) void conversations.configure(selected, model)
+          }}
+          onSend={(text) =>
+            selected ? conversations.send(selected, text) : false
+          }
+          onStop={() => {
+            if (selected) conversations.stop(selected.id)
+          }}
+        />
       </main>
       {accountOpen && <CodexPanel hub={hub} onClose={closeAccount} />}
     </div>

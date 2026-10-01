@@ -45,7 +45,7 @@ The vendored Interchange source is licensed under
 [`LGPL-2.1-only`](interchange/LICENSE). This repository has no license for
 the chat client itself.
 
-Each chat is a child tenant, following Workbench. The sidebar lists owned child tenants; their `Sent` and `INBOX` mailboxes supply the complete transcript. Model changes publish the workflow asset and redeploy through stock catalog, Git and workflow APIs. No chat-specific Hub route or database table is used. Old workspace mail remains available under Previous chats.
+Each chat is a child tenant, following Workbench. The sidebar lists owned child tenants; their `Sent` and `INBOX` mailboxes supply the complete transcript. Model changes publish the workflow asset and redeploy through stock catalog, Git and workflow APIs. No chat-specific Hub route or database table is used.
 
 `bun run build` generates the workflow runtime bundle from `agents/chat/workflow.ts` before building the UI. Install dependencies in both this directory and `interchange/` first.
 

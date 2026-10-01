@@ -91,7 +91,6 @@ export function useConversations(tenantId: string) {
         const history = conversationMessages(conversation)
         const last = history.at(-1)
         if (
-          !conversation.archive &&
           !pendingRef.current[conversation.id] &&
           last?.role === "user" &&
           conversation.status === "deployed"
@@ -157,7 +156,6 @@ export function useConversations(tenantId: string) {
   }, [tenantId, reload])
 
   const mailboxTenants = items
-    .filter((item) => !item.archive)
     .map((item) => item.id)
     .sort()
     .join(",")
@@ -209,12 +207,7 @@ export function useConversations(tenantId: string) {
   }
 
   const send = async (conversation: Conversation, prompt: string) => {
-    if (
-      busy ||
-      pendingRef.current[conversation.id] ||
-      conversation.archive ||
-      !prompt.trim()
-    )
+    if (busy || pendingRef.current[conversation.id] || !prompt.trim())
       return false
     const history = conversationMessages(conversation)
     pendingRef.current = {

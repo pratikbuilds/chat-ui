@@ -15,7 +15,6 @@ const chat: Conversation = {
   effort: "medium",
   status: "deployed",
   createdAt: "",
-  archive: false,
   messages: [
     {
       uid: 2,

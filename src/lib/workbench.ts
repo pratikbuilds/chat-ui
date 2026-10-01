@@ -7,7 +7,6 @@ import {
   type MailboxMessage,
 } from "./hub"
 
-
 const Tenant = type({
   id: "string",
   name: "string",
@@ -78,7 +77,6 @@ export type Conversation = {
   status: string
   createdAt: string
   messages: MailboxMessage[]
-  archive: boolean
 }
 
 export async function ownedTenants() {
@@ -129,7 +127,7 @@ async function readChat(tenant: typeof Tenant.infer): Promise<Conversation> {
     effort: "medium",
     offeringId: "",
   }
-  if (asset && latest && tenant.parentId !== null) {
+  if (asset && latest) {
     const key = `${tenant.id}:${latest.id}`
     const cached = settingsCache.get(key)
     if (cached) settings = cached
@@ -159,7 +157,6 @@ async function readChat(tenant: typeof Tenant.infer): Promise<Conversation> {
     status: latest?.status ?? "released",
     createdAt: tenant.createdAt,
     messages: [...inbox, ...sent],
-    archive: tenant.parentId === null,
   }
 }
 
@@ -168,37 +165,7 @@ export async function listConversations(parentId: string) {
   const chats = await Promise.all(
     tenants.filter((tenant) => tenant.parentId === parentId).map(readChat)
   )
-  // Previous chats remain readable in their original mailbox. No mail is moved or deleted.
-  const parent = tenants.find((tenant) => tenant.id === parentId)
-  if (parent) {
-    const history = await readChat(parent)
-    const addresses = new Set(
-      history.messages
-        .filter((mail) => mail.folder === "Sent")
-        .flatMap((mail) => mail.to)
-    )
-    for (const address of addresses) {
-      const messages = history.messages.filter((mail) =>
-        (mail.folder === "Sent" ? mail.to : mail.from).includes(address)
-      )
-      const opening = messages
-        .filter((mail) => mail.folder === "Sent")
-        .sort((a, b) => a.date - b.date)[0]
-      chats.push({
-        ...history,
-        id: `${parent.id}:${address}`,
-        messages,
-        title: opening?.text.slice(0, 120) || "Previous chat",
-      })
-    }
-    if (history.messages.length && addresses.size === 0)
-      chats.push({ ...history, title: "Previous mail" })
-  }
-  return chats.sort(
-    (a, b) =>
-      Number(a.archive) - Number(b.archive) ||
-      b.createdAt.localeCompare(a.createdAt)
-  )
+  return chats.sort((a, b) => b.createdAt.localeCompare(a.createdAt))
 }
 
 async function ensureOffering(parentId: string, selected: string) {
@@ -255,10 +222,6 @@ export async function updateConversation(
   chat: Conversation,
   model: string
 ) {
-  if (chat.archive)
-    throw new Error(
-      "Start a new chat to continue. Previous mail is read-only here."
-    )
   const offeringId = await ensureOffering(parentId, model)
   const assets = await stock(
     "GET",
