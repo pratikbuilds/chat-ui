@@ -142,15 +142,31 @@ export function LiveWorkspace({
             </Button>
             <h1 className="truncate text-base font-semibold">{chat.title}</h1>
           </div>
-          <Button
-            variant="outline"
-            className="h-8"
-            onClick={() => void share()}
-            disabled={!chat.messages.length}
-          >
-            <Share2 />
-            {copied ? "Copied" : "Share"}
-          </Button>
+          <div className="flex shrink-0 items-center gap-2">
+            {selected && (
+              <span
+                className="flex h-8 items-center gap-1.5 rounded-md border border-[#ECE9E4] bg-[#FAF9F7] px-2 text-xs text-muted-foreground"
+                title={`Child tenant ID: ${selected.id}`}
+              >
+                <span className="hidden sm:inline">Tenant</span>
+                <code
+                  className="max-w-[110px] truncate select-text sm:max-w-none"
+                  aria-label="Child tenant ID"
+                >
+                  {selected.id}
+                </code>
+              </span>
+            )}
+            <Button
+              variant="outline"
+              className="h-8"
+              onClick={() => void share()}
+              disabled={!chat.messages.length}
+            >
+              <Share2 />
+              {copied ? "Copied" : "Share"}
+            </Button>
+          </div>
         </header>
         <ChatThread
           chat={chat}
